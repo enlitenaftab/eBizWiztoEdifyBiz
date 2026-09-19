@@ -366,62 +366,6 @@ namespace eBizWiztoEdifyBiz
             Console.WriteLine("  Branch details (address / phones / email / website / zone / office type) filled from eBizWiz offices: " + n);
         }
 
-        // Closing stock = the client's own balance. eBizWiz keeps the current stock per office + item in mststkdt (ngoodbal / ndefbal) and
-        // lets users change it directly (Stock > Change Stock Details) without any transaction, so opening + in - out - sold - spares
-        // differs from it on ~2,500 items (e.g. Cryo Box 2 Inch HO: 1,581 received, nothing issued, balance 0). After every stock
-        // movement is posted (modules 8 and 11) one EdifyBiz stock JV per branch + product carries the difference - the same standard
-        // entry as Opening Stock (stockjv module JV + stocktrans JV, app/inventory/openingstock.asp -> InventoryTrigger), remark
-        // "eBizWiz balance adjustment", dated when the client last changed that balance (mststkdt.editedon). Service products hold no
-        // stock and are skipped. Re-run safe: an existing adjustment row of the branch + product is left as it is. - Aftab Alam
-        public static void PostBalanceAdjustment(SqlConnection tgt, Dictionary<int, int> branchByOffice, Dictionary<int, int> prodByItem)
-        {
-            Dictionary<int, int> batchByProd = DefaultBatchByProduct();
-            HashSet<int> service = new HashSet<int>();
-            Dictionary<int, int> unitByProd = new Dictionary<int, int>();
-            foreach (DataRow r in GetTgt("SELECT code, ISNULL(type,'p') AS t, ISNULL(unitcode,0) AS u FROM product WITH (NOLOCK)").Tables[0].Rows)
-            { if (Str(r["t"]).ToLowerInvariant() == "s") service.Add(Int(r["code"])); unitByProd[Int(r["code"])] = Int(r["u"]); }
-            Dictionary<string, decimal[]> ledger = new Dictionary<string, decimal[]>();
-            foreach (DataRow r in GetTgt("SELECT branchcode, productcode, prodbatchcode, SUM(qty) q, SUM(dqty) dq FROM stocktrans WITH (NOLOCK) GROUP BY branchcode, productcode, prodbatchcode").Tables[0].Rows)
-                ledger[Int(r["branchcode"]) + "|" + Int(r["productcode"]) + "|" + Int(r["prodbatchcode"])] = new decimal[] { Dec(r["q"]), Dec(r["dq"]) };
-            HashSet<string> done = new HashSet<string>();
-            foreach (DataRow r in GetTgt("SELECT branchcode, productcode, prodbatchcode FROM stockjv WHERE module = 'JV' AND remark = 'eBizWiz balance adjustment'").Tables[0].Rows)
-                done.Add(Int(r["branchcode"]) + "|" + Int(r["productcode"]) + "|" + Int(r["prodbatchcode"]));
-
-            int rows = 0, skipped = 0; decimal plus = 0, minus = 0, dplus = 0, dminus = 0;
-            foreach (DataRow r in GetSrc("SELECT nofficeid, nitem, SUM(ISNULL(ngoodbal,0)) g, SUM(ISNULL(ndefbal,0)) d, MAX(editedon) ed, MAX(addedon) ad FROM mststkdt WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") GROUP BY nofficeid, nitem ORDER BY nofficeid, nitem").Tables[0].Rows)
-            {
-                int br, prod, batch;
-                if (!branchByOffice.TryGetValue(Int(r["nofficeid"]), out br) || !prodByItem.TryGetValue(Int(r["nitem"]), out prod) || !batchByProd.TryGetValue(prod, out batch)) { skipped++; continue; }
-                if (service.Contains(prod)) continue;
-                string k = br + "|" + prod + "|" + batch;
-                if (done.Contains(k)) continue;
-                decimal[] l; if (!ledger.TryGetValue(k, out l)) l = new decimal[] { 0m, 0m };
-                decimal dq = Dec(r["g"]) - l[0], ddq = Dec(r["d"]) - l[1];
-                if (dq == 0 && ddq == 0) continue;
-                object dt = r["ed"] != DBNull.Value ? r["ed"] : (r["ad"] != DBNull.Value ? r["ad"] : (object)DateTime.Today);
-                int unit; unitByProd.TryGetValue(prod, out unit);
-                int jv;
-                using (SqlCommand c = new SqlCommand(@"INSERT INTO stockjv (date, branchcode, productcode, prodbatchcode, qty, dqty, module, modulecode, remark, unit, createdby, createdon, updatedby, updatedon, price, number)
-                                                       OUTPUT INSERTED.code
-                                                       VALUES (@d, @b, @p, @pb, @q, @dq, 'JV', 0, 'eBizWiz balance adjustment', @u, @cb, @d, @cb, @d, 0, '')", tgt))
-                {
-                    c.Parameters.AddWithValue("@d", dt); c.Parameters.AddWithValue("@b", br); c.Parameters.AddWithValue("@p", prod); c.Parameters.AddWithValue("@pb", batch);
-                    c.Parameters.AddWithValue("@q", dq); c.Parameters.AddWithValue("@dq", ddq); c.Parameters.AddWithValue("@u", unit); c.Parameters.AddWithValue("@cb", MigrationUser);
-                    jv = Convert.ToInt32(c.ExecuteScalar());
-                }
-                using (SqlCommand c = new SqlCommand(@"INSERT INTO stocktrans (date, branchcode, productcode, prodbatchcode, qty, dqty, unit, module, modulecode, createdby, createdon, updatedby, updatedon)
-                                                       VALUES (@d, @b, @p, @pb, @q, @dq, @u, 'JV', @jv, @cb, @d, @cb, @d)", tgt))
-                {
-                    c.Parameters.AddWithValue("@d", dt); c.Parameters.AddWithValue("@b", br); c.Parameters.AddWithValue("@p", prod); c.Parameters.AddWithValue("@pb", batch);
-                    c.Parameters.AddWithValue("@q", dq); c.Parameters.AddWithValue("@dq", ddq); c.Parameters.AddWithValue("@u", unit); c.Parameters.AddWithValue("@jv", jv); c.Parameters.AddWithValue("@cb", MigrationUser);
-                    c.ExecuteNonQuery();
-                }
-                rows++; if (dq > 0) plus += dq; else minus += dq; if (ddq > 0) dplus += ddq; else dminus += ddq;
-            }
-            Console.WriteLine("  eBizWiz balance adjustment (JV): " + rows + " branch+item rows, good +" + plus.ToString("0.##", CultureInfo.InvariantCulture) + " / " + minus.ToString("0.##", CultureInfo.InvariantCulture) +
-                              ", damaged +" + dplus.ToString("0.##", CultureInfo.InvariantCulture) + " / " + dminus.ToString("0.##", CultureInfo.InvariantCulture) + "  (skipped, item not migrated: " + skipped + ")");
-        }
-
         // eBizWiz item -> EdifyBiz product for every document line. Module 2 creates one product per item (casno = Item Code,
         // name = Name). 1,732 client names are shared by 8,423 items (same model name, different Item Code), so the old name-only
         // match sent every line of such an item to the FIRST product of that name. Item Code is unique per item: match on
@@ -941,9 +885,7 @@ namespace eBizWiztoEdifyBiz
             foreach (DataRow r in GetTgt("SELECT name FROM desigmaster").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0) existing.Add(n); }
 
             int added = 0;
-            //foreach (DataRow r in GetSrc("SELECT DISTINCT ndesignation FROM msdparty WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ndesignation IS NOT NULL AND ndesignation > 0").Tables[0].Rows)
-            // Master > Users and Rights > Designation: every ACTIVE client designation (all 7,677 are active) + any used by a person - same rule as the other masters. - Aftab Alam
-            foreach (DataRow r in GetSrc("SELECT ncode AS ndesignation FROM mstdesignation WITH (NOLOCK) WHERE bactive = 1 UNION SELECT DISTINCT ndesignation FROM msdparty WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ndesignation IS NOT NULL AND ndesignation > 0").Tables[0].Rows)
+            foreach (DataRow r in GetSrc("SELECT DISTINCT ndesignation FROM msdparty WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ndesignation IS NOT NULL AND ndesignation > 0").Tables[0].Rows)
             {
                 string nm = LookInt(_designations, Int(r["ndesignation"]));
                 if (nm.Length == 0 || existing.Contains(nm)) continue;
@@ -1002,7 +944,6 @@ namespace eBizWiztoEdifyBiz
         static void EnsureUsers(SqlConnection tgt)
         {
             HashSet<string> usedUsernames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            HashSet<string> createdNames = new HashSet<string>();
             using (SqlCommand c = new SqlCommand("SELECT code, name, username FROM users", tgt))
             using (SqlDataReader r = c.ExecuteReader())
                 while (r.Read())
@@ -1045,33 +986,8 @@ namespace eBizWiztoEdifyBiz
                     ins.Parameters.AddWithValue("@cb", MigrationUser);
                     int code = Convert.ToInt32(ins.ExecuteScalar());
                     _userByName[nm] = code; created++;
-                    createdNames.Add(nm);
                 }
             }
-            // Master > Users and Rights: a client user who is inactive in eBizWiz (no active mstusers row with that name) gets the
-            // standard EdifyBiz suspend flag (users.suspenduser = 1 -> login refused "account has been suspended"); mobile and postal
-            // code go to users.mobile_no / zipcode. Only users created by the migration are touched. - Aftab Alam
-            Dictionary<string, object[]> det = new Dictionary<string, object[]>(StringComparer.OrdinalIgnoreCase);   // name -> { active, mobile, zip }
-            foreach (DataRow r in GetSrc("SELECT vname, bactive, vmobile, vpostalcode FROM mstusers WITH (NOLOCK) ORDER BY bactive DESC, ncode").Tables[0].Rows)
-            {
-                string nm = Cap(Str(r["vname"]), 150); if (nm.Length == 0) continue;
-                object[] d; if (!det.TryGetValue(nm, out d)) det[nm] = d = new object[] { false, "", "" };
-                if (Bool(r["bactive"])) d[0] = true;
-                if (((string)d[1]).Length == 0) d[1] = Cap(Str(r["vmobile"]), 50);
-                if (((string)d[2]).Length == 0) d[2] = Str(r["vpostalcode"]);
-            }
-            int suspended = 0;
-            foreach (string nm in createdNames)
-            {
-                object[] d; if (!det.TryGetValue(nm, out d)) continue;
-                using (SqlCommand u = new SqlCommand("UPDATE users SET suspenduser = @s, mobile_no = ISNULL(NULLIF(mobile_no,''), @m), zipcode = ISNULL(NULLIF(zipcode,''), @z) WHERE code = @c", tgt))
-                {
-                    u.Parameters.AddWithValue("@s", (bool)d[0] ? 0 : 1); u.Parameters.AddWithValue("@m", PS((string)d[1])); u.Parameters.AddWithValue("@z", PS((string)d[2]));
-                    u.Parameters.AddWithValue("@c", _userByName[nm]); u.ExecuteNonQuery();
-                }
-                if (!(bool)d[0]) suspended++;
-            }
-            Console.WriteLine("  Users inactive in eBizWiz -> suspended: " + suspended);
             Console.WriteLine("  Users (ALL source users): " + _userByName.Count + " in target, " + created + " created.");
         }
 
@@ -7389,7 +7305,6 @@ namespace eBizWiztoEdifyBiz
                     try { InsertRow(tgt, h); }
                     catch (Exception ex) { _errors++; if (_errors <= 20) Console.WriteLine("  [ERROR] Call " + Int(h["nofficeid"]) + "|" + Int(h["ncode"]) + " " + Str(h["vtrnno"]) + ": " + ex.Message); }
                 }
-                PostBalanceAdjustment(tgt, _branchByOffice, _prodByItem);   // last stock step: EdifyBiz stock = the client's own balance - Aftab Alam
                 RebuildSummary(tgt);
 
                 Console.WriteLine("-----------------------------------------------------");

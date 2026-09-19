@@ -1,151 +1,157 @@
-# Stock-IN / Stock-OUT / Physical Stock — Migration Mapping (eBizWiz → EdifyBiz Inventory)
+# 10. Stock In / Stock Out → GRN / MRO / GTA
 
-Client menu **Order → Stock**: Stock-IN, Stock-OUT, Physical Stock Taking. Read as: what the client has → where it sits in the client DB → which table/column it goes to in our DB.
+Format: see `00_MAPPING_FORMAT.md`.
 
-EdifyBiz target = the existing **Inventory** module (`/edify/inventory/`) — **no form changes** (user rule 2026-09-15). The data must fit the screens as they are:
+## 1. Overview
 
-| EdifyBiz screen | Header table | Line table | Ledger (`stocktrans.module`) |
-|---|---|---|---|
-| **GRN / MRN** (stock in) `/edify/inventory/grn/` | `stockinout` (`type='GRN'`) | `stockinoutdet` | `GRN`, qty **+** |
-| **GRO / MRO** (stock out) `/edify/inventory/mro/` | `stockinout` (`type='MRO'`) | `stockinoutdet` | `MRO`, qty **−** |
-| **GTA / MTA** (branch transfer) `/edify/inventory/gta/` | `stockb2b` | `stockb2bdet` | `GTA`, − at from-branch, + at to-branch (branch 0 = in transit) |
-| Stock Summary report | — | — | reads `stocktrans` (filter on `createdon`) + `productstocksummary` |
-
-Source tables (offices 2/3/4/6): `trhstkin` + `trdstkin1items` (7,150 docs / 30,583 lines), `trhstkou` + `trdstkou1items` (1,326 / 2,475), `trdstkin5serialno` (22), `trdstkin2posttaxchgs` (65), `trdstkou2posttaxchgs` (6), `trhpstk` + `trdpstk1detail` (5 / **0 lines**), `trhstktrf` (1).
-
-Reference checked in another live EdifyBiz DB (Cona4HO315332): GRNs saved with `module='PO'`, `grntype` = name text, supplier sometimes empty; opening stock posted as `JV`; `productstocksummary.qty` = sum of `stocktrans.qty` for every row.
-
----
-
-## 1) What the client data is (verified)
-
-**Stock-IN** (`nstkinfrom` / `nstkintype` → `mstfixedselection`):
-
-| From | Type | Docs | Goes to |
-|---|---|---|---|
-| FROM PARTY | AGAINST ORDER PLACED | 4,759 | GRN against PO |
-| FROM PARTY | FRESH | 1,206 | GRN (no PO) |
-| FROM PARTY | AGAINST W SALES RETURN | 6 | GRN (sales return) |
-| FROM OFFICE | FRESH / AGAINST STOCK OUT | 787 | branch transfer (§4) |
-| FROM USER | FRESH | 392 | engineer returns (§5, decision) |
-
-**Stock-OUT** (`nstkoutto` / `nstkoutype`):
-
-| To | Type | Docs | Goes to |
-|---|---|---|---|
-| TO OFFICE | FRESH | 792 | branch transfer (§4) |
-| TO USER | FRESH | 526 | engineer issue (§5, decision) |
-| TO PARTY | FRESH / AGAINST ORDER RECEIVED / AGAINST CLAIM | 8 | MRO |
-
-- All documents are approved (`bapproval = 1`). Client balance tables (`msditembalance`, `mststockhistory`) are **empty** — eBizWiz computes stock on the fly: opening + stock-in − stock-out − **sold** − warranty issues.
-- 742 office transfers are **pairs**: Stock-OUT at office A ↔ Stock-IN at office B with `trhstkin.nstkouno` = `trhstkou.ncode` (704 of them same total qty). 50 Stock-OUT to office have no Stock-IN; 45 Stock-IN from office have no Stock-OUT.
-- A GRN refers to one PO (4,753 docs; 1 doc refers to 22 POs). Party = PO supplier in 4,753 of 4,754.
-
----
-
-## 2) Stock-IN from party → GRN (`stockinout` `type='GRN'`)
-
-| Client (eBizWiz) | Client DB (`trhstkin`) | Our DB (`stockinout`) | GRN form label |
-|---|---|---|---|
-| Trn. No. | `vtrnprefix` + `ntrnno` ("SI…") | `number` | GRN Number |
-| Trn. Date | `dtrndate` (1 bad date SI2384 = 2202-11-10 → use `addedon` 2022-11-11) | `date` | GRN Date |
-| (office) | `nofficeid` → branch 3/4/5/6 | `branchcode` | Branch Name |
-| From Party | `nfromparty` → migrated `contact` | `scode` | Supplier |
-| Against Order Placed | line `nordpl1` → `trdordpl1items.nordpl` → migrated PO (branch + purorderno) | `module='PO'`, `modulecode` = `pur_order.code` (doc with 22 POs → first PO, rest in remark) | PO/PI + PO/PI Number |
-| Stock-In Type | `nstkintype` name (FRESH / AGAINST ORDER PLACED / AGAINST W SALES RETURN) | `grntype` (name text; seed `miscellaneous(GRN/grntype)` so the dropdown shows it) | Type |
-| Remarks + Comment + Ref No/Date + Dispatch Mode/Through/Doc No/Date + charges + missing qty | `vremarks`, `vcomment`, `vrefno`, `drefdate`, `ndispatchmode`, `vdespatchthru`, `vdespdocno`, `ddespdocdate`, `trdstkin2posttaxchgs` | `remark` (labelled) | Remarks |
-| — | — | `vehicleno`, `taxinvno` (WaterWays-only field), `projectcode`, `status` = NULL | — |
-
-Coverage: Ref No 5,186, Ref Date 5,603, Remarks 3,948, Dispatch Mode 6,414, Through 3,260, Doc No 2,286. `nterms`/`vtermsconditions`/`ncheckset`/`approvedby` are empty.
-
-**Lines → `stockinoutdet`** (`trdstkin1items`):
-
-| Client | Client DB | Our DB (`stockinoutdet`) |
+| | Client (eBizWiz) | Ours (EdifyBiz) |
 |---|---|---|
-| Item | `nitem` → migrated `product` | `productcode` |
-| (batch) | — | `prodbatchcode` = product's **Default Batch** (batch is mandatory on the GRN line) |
-| Accepted qty | `nquantityaccept` | `qty` (good stock) |
-| Rejected qty | `nquantityreject` | `dqty` (damaged) |
-| Missing qty | `nquantitymissing` | not stock → remark |
-| Rate | `nrate` | `price` |
-| Unit | item unit → `product.unitcode` | `unit` |
+| Screen / menu | **Stock In** (Stock In From: FROM PARTY / FROM OFFICE / FROM USER; Stock In Is: FRESH / AGAINST ORDER PLACED / AGAINST STOCK OUT / AGAINST W SALES RETURN) and **Stock OUT** (Stock Out To: TO PARTY / TO OFFICE / TO USER); header + *Stock In Item* / *Stock Out Item* (with serial numbers) | **Inventory** module: **GRN** `/edify/inventory/grn/` (stock in), **MRO** `/edify/inventory/mro/` (stock out), **GTA** `/edify/inventory/gta/` (branch transfer), Stock Summary report |
+| Tables | `trhstkin` + `trdstkin1items` (+ `trdstkin2posttaxchgs`, `trdstkin3checks`, `trdstkin4payterms`, `trdstkin5serialno`), `trhstkou` + `trdstkou1items` (+ `trdstkou2posttaxchgs`, `trdstkou3checks`); masters `mstfixedselection` (from / to / type / dispatch mode), `mstparty`, `mstusers`, `mstoffice`, `mstitems` | `stockinout` (`type` GRN / MRO) + `stockinoutdet`, `stockb2b` + `stockb2bdet`, ledger `stocktrans`, `productstocksummary`; master `miscellaneous` (GRN / grntype) |
+| Code | — | `inventory/{grn,mro,gta}/default.asp`, `assets/scripts/inventory/{grn,mro,gta}.js`, `app/inventory/{grn,mro,gta}.asp`, stock postings `app/inventory/inventoryfunction.asp` |
+| Exe | — | module **8. Stock** — class `Stock` in `Program.cs` (after modules 1–7: products, POs and invoices must exist) |
+| Scope | offices 2, 3, 4, 6 (1 and 5 are WinMax test offices) — Stock In 7,150, Stock Out 1,326 | |
+| Status | | migrated and verified |
 
-Qty check: accepted + rejected + missing = ordered `nquantity` on 30,366 of 30,583 lines; rejected on 325 lines, missing on 212. There is no tax / amount on inventory lines — the 65 Stock-IN charge rows (GST, TOTAL …) go to the remark only.
+**No form change:** the GRN, MRO and GTA screens are used as they are. Client fields that have no field on them are kept, labelled, in the document's Remarks tab.
 
 ---
 
-## 3) Stock-OUT to party → MRO (`stockinout` `type='MRO'`)
+## 2. Field mapping
 
-| Client | Client DB (`trhstkou`) | Our DB (`stockinout`) | MRO form label |
+### 2.1 Which screen a client document goes to
+
+| Client Stock In From / Out To | Client type | Docs | Ours |
 |---|---|---|---|
-| Trn. No. | `vtrnprefix` + `ntrnno` ("SO…") | `number` | MRO Number |
-| Trn. Date | `dtrndate` | `date` | MRO Date |
-| (office) | `nofficeid` → branch | `branchcode` | Branch |
-| To Party | `ntoparty` → `contact` | `scode` | Contractor |
-| Remarks etc. | `vremarks`, `vcomment`, `vrefno`, `drefdate`, dispatch fields, `ncalls`, charges | `remark` | Remarks |
+| FROM PARTY | AGAINST ORDER PLACED | 4,759 | **GRN** with the PO link |
+| FROM PARTY | FRESH | 1,206 | **GRN** |
+| FROM PARTY | AGAINST W SALES RETURN | 6 | **GRN** |
+| FROM USER | FRESH | 392 | **GRN** at the office branch (engineer returns stock) |
+| FROM OFFICE | with a matching Stock Out of the same items | 717 | inside the **GTA** of that Stock Out |
+| FROM OFFICE | pair with different items, or no Stock Out | 70 | **GRN** |
+| TO OFFICE | received by a Stock In with the same items | 717 | **GTA** (not in transit) |
+| TO OFFICE | not received | 50 | **GTA in transit** (stock at branch 0) |
+| TO OFFICE | received with different items | 25 | **MRO** (+ the Stock In as GRN) |
+| TO USER | FRESH | 526 | **MRO** at the office branch (engineer issue) |
+| TO PARTY | FRESH / AGAINST ORDER RECEIVED / AGAINST CLAIM | 8 | **MRO** |
 
-Lines (`trdstkou1items`) → `stockinoutdet`: `nitem` → `productcode`, Default Batch, `nquantity` → `qty`, `ndefquantity` → `dqty` (37 lines), `nrate` → `price`, unit. MRO form has no module/link field → `nordrc1` (6 lines against SO) noted in remark.
+### 2.2 Stock In header → `stockinout` (`type = 'GRN'`)
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 1 | Trn. No. | `trhstkin.vtrnprefix` + `ntrnno` | `stockinout.number` | GRN Number | GRN Number | e.g. `SI3222` |
+| 2 | Trn. Date | `dtrndate` | `stockinout.date`, `createdon` | GRN Date | GRN Date | SI2384 has 2202-11-10 in the client → its entry date |
+| 3 | From (party) | `nfromparty` → `mstparty` | `stockinout.scode` | Supplier | Supplier | party → contact (module 1) |
+| 4 | From (user) | `nfromuser` → `mstusers` | part of `remark` | Remarks | Remarks tab | Supplier blank; `Stock-IN FROM USER … User: <name>` |
+| 5 | From (office) | `nfromoffice` | part of `remark` / GTA | Remarks | Remarks tab | see 2.1 |
+| 6 | Stock In Is | `nstkintype` → `mstfixedselection` | `stockinout.grntype` | Type | Type | name as text; full group seeded |
+| 7 | (against order placed) | line `nordpl1` → `trdordpl1items` → PO | `stockinout.module = 'PO'`, `modulecode = pur_order.code` | PO/PI + PO/PI Number | Invoice Number | 4,754 GRNs; a GRN against several POs keeps the first, the others go to the remark (`Against POs: …`) |
+| 8 | (office of the record) | `nofficeid` | `stockinout.branchcode` | Branch Name | Branch Name | office → branch 3/4/5/6 |
+| 9 | Dispatch Mode, Dispatch Through, Docket No., Docket Date | `ndispatchmode`, `vdespatchthru`, `vdespdocno`, `ddespdocdate` | part of `remark` | Remarks | Remarks tab | no dispatch / transporter / LR field on the GRN (vehicle no. only) |
+| 10 | Ref. No. / Ref. Date | `vrefno`, `drefdate` | part of `remark` | Remarks | Remarks tab | the supplier reference fields on the GRN are Bendy-only |
+| 11 | Remarks / Comment | `vremarks`, `vcomment` | `remark` | Remarks | Remarks tab | |
+| 12 | Post Tax Charges | `trdstkin2posttaxchgs` (65) | part of `remark` | Remarks | Remarks tab | `Charges: …`; inventory documents carry no amounts |
+| 13 | Missing qty (lines) | `trdstkin1items.nquantitymissing` (212 lines) | part of `remark` | Remarks | Remarks tab | `Missing qty: …`; not stock |
+| 14 | Payment Terms | `trdstkin4payterms` (1 row) | part of `remark` | Remarks | Remarks tab | `Payment Terms: <term> 100% = 1073.00` (office 3, Stock-IN 104); a GRN has no terms field |
+| 15 | Serial numbers | `trdstkin5serialno` (22) | part of `remark` | Remarks | Remarks tab | `Serial No: …`; the GRN has no serial entry (serials live only in the batch master, without a GRN link) |
+| 16 | Terms & Cond. / Check List | `nterms`, `ncheckset`, `trdstkin3checks` | — | — | — | 0 / 0 / 0 rows |
+| 17 | Trn. Total | `ntotalamount` | — | — | — | no amounts on inventory documents |
+
+### 2.3 Stock In items → `stockinoutdet` + ledger
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 18 | Item Name / Item Code | `trdstkin1items.nitem` | `stockinoutdet.productcode` | Product | Product | product by Item Code (module 2, `product.casno`) |
+| 19 | — | — | `stockinoutdet.prodbatchcode` | Batch | Batch | the product's Default Batch (batch is required) |
+| 20 | Qty. Accepted (Good) | `nquantityaccept` | `stockinoutdet.qty` | Quantity | Quantity | good stock |
+| 21 | Qty. Rejected (Def.) | `nquantityreject` | `stockinoutdet.dqty` | Damaged Qty | Damaged Qty. | defective stock (325 lines) |
+| 22 | Stock In Rate | `nrate` | `stockinoutdet.price` | Price | Price | |
+| 23 | — | item unit | `stockinoutdet.unit` | Unit | Unit | `product.unitcode` |
+| 24 | Challan Qty / Qty. Received / Master Rate / Discount / Tax Set / Reject Reason / Auto Generated | `nquantity`, `nquantityrecd`, `nmasterrate`, `ndiscount*`, `ntaxset`, `nrejectreason`, `bautoserial` | — | — | — | no such field on a GRN line |
+| 25 | (stock ledger) | — | `stocktrans` (`module` GRN, `modulecode` = `stockinoutdet.code`, +qty / +dqty, date = document date) | — | Stock Summary | same row the app's `InventoryTrigger` writes |
+
+### 2.4 Stock Out → `stockinout` (`type = 'MRO'`) / `stockb2b` (GTA)
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 26 | Trn. No. / Trn. Date | `trhstkou.vtrnprefix` + `ntrnno`, `dtrndate` | MRO `number` / `date`; GTA `stockb2b.number` / `date` | MRO / GTA Number, Date | same | |
+| 27 | To (party) | `ntoparty` | MRO `scode` | Contractor | Contractor | |
+| 28 | To (user) | `ntouser` | part of MRO `remark` | Remarks | Remarks tab | Contractor blank; `User: <name>` |
+| 29 | To (office) | `ntooffice` | GTA `tobranchcode` (`frombranchcode` = own office) | To / From Branch Name | same | not received → `intransit = 1` |
+| 30 | Stock Out Is | `nstkoutype` | part of `remark` | Remarks | Remarks tab | MRO / GTA have no type for this |
+| 31 | Dispatch Mode / Through, Docket No. / Date, Ref. No. / Date, Remarks, Comment, charges | as 2.2 | part of `remark` | Remarks | Remarks tab | GTA "Transporter" is a contact picker, the client value is free text |
+| 32 | (paired Stock In of a GTA) | `trhstkin.nstkouno` | part of GTA `remark` | Remarks | Remarks tab | `Received by Stock-IN SI…` |
+| 33 | Items: Item, Quantity, Defective qty, Rate | `trdstkou1items.nitem`, `nquantity`, `ndefquantity`, `nrate` | `stockinoutdet` / `stockb2bdet` (`productcode`, Default Batch, `qty`, `dqty`, `price`, `unit`) | Product, Batch, Quantity, Damaged Qty, Price, Unit | same | |
+| 34 | (stock ledger) | — | `stocktrans` MRO −qty / −dqty; GTA −qty at the from-branch, + at the to-branch (branch 0 in transit) | — | Stock Summary | `dqty` written negative when stock leaves (the app would add it) |
+
+### 2.5 Movements from other modules (same ledger)
+
+| # | Source | Our DB | Rule |
+|---|---|---|---|
+| 35 | Sales Invoice lines (module 7) | `stocktrans` `SAL` −qty, `modulecode` = `sal_order_det.code` | not for service products or qty 0 — as the app's `SalesInventoryTrigger` |
+| 36 | Spares used on service calls (module 11) | one MRO per call + `stocktrans` MRO | non-service items only (LABOUR rows stay in Used Product) |
+| 37 | Item Opening Balance [Office-wise] (`mststkdt.ngoodopbal` / `ndefopbal` on `dopbaldate`) | `stockjv` (module `JV`, remark "Opening Stock", price = product price) + `stocktrans` `JV` +qty / +dqty, `modulecode` = `stockjv.code` | EdifyBiz standard **Inventory > Opening Stock** (`app/inventory/openingstock.asp` → `InventoryTrigger` JV); 2,590 office + item rows, good 337,749, damaged 1 row |
+| 38a | Client balance (`mststkdt.ngoodbal` / `ndefbal`) after every movement (end of module 11) | `stockjv` (module `JV`, remark "eBizWiz balance adjustment", date = `mststkdt.editedon`) + `stocktrans` `JV` ± qty / ± dqty | one standard stock JV per branch + product for the difference between the client balance and the ledger (the client edits balances directly in Change Stock Details, which leaves no transaction); service products skipped. 2,501 rows, good +396 / −35,361, damaged +3 |
+| 38 | After all movements | `productstocksummary` | rebuilt from `stocktrans` per branch + product + batch |
 
 ---
 
-## 4) Office ↔ office → GTA (`stockb2b` / `stockb2bdet`)
+## 3. Masters seeded
 
-| Client | Our DB (`stockb2b`) |
-|---|---|
-| Stock-OUT Trn. No. (`trhstkou` SO…) | `number` |
-| Stock-OUT date | `date` |
-| Stock-OUT office | `frombranchcode` |
-| `ntooffice` | `tobranchcode` |
-| paired Stock-IN no. + date, remarks, dispatch fields | `remark` |
-| — | `intransit` (see decision D2), `type`/`scode`/`transportercode` NULL |
-
-Lines → `stockb2bdet` (product, Default Batch, qty, dqty, unit, price). Ledger: `GTA` − at from-branch, + at to-branch.
+| Master | Our table | Rows added | Source |
+|---|---|---|---|
+| GRN Type | `miscellaneous` (GRN / grntype) | 9 (full group) | `mstfixedselection` `nstkintype` |
 
 ---
 
-## 5) Ledger + summary (what the exe must write, since it inserts directly)
+## 4. Changes made on our side
 
-- `stocktrans` per line: `date` = document date, `branchcode`, `productcode`, `prodbatchcode`, `qty` (+ GRN / − MRO / ± GTA), `dqty`, `unit`, `module` (`GRN`/`MRO`/`GTA`), `modulecode` = **line** code (`stockinoutdet.code` / `stockb2bdet.code`), `createdon` = document date (the Stock Summary report filters on `createdon`).
-- After all inserts: rebuild `productstocksummary` per branch + product + batch = sum(`qty`), sum(`dqty`) from `stocktrans` (same as the app's `InventoryTrigger`).
+### 4a. Form / view changes
 
----
+None — the GRN, MRO and GTA forms and views are used as they are. User branch access, which these lists depend on, is set by module 1 (01 §3).
 
-## 6) Not migrated
+**New fields: 0**
 
-| Client | Reason |
-|---|---|
-| Physical Stock Taking (`trhpstk`) | 5 headers, **0 lines** — nothing to post |
-| Stock Transfer user → user (`trhstktrf`) | 1 document, no branch change |
-| Stock-IN checks / pay terms | 0 / 1 rows |
-| Serial numbers (`trdstkin5serialno`) | 22 rows; EdifyBiz serial master (`prodbatchsrno`) needs trading serial + warranty → serials go to the GRN remark |
+### 4b. Database changes (ALTER)
+
+None.
 
 ---
 
-## 7) Decisions (approved 2026-09-15 — "jo best ho, only exe, no form change")
+## 5. Not migrated
 
-| # | Decision | Exe rule |
+| Client UI | Client DB | Rows | Why |
+|---|---|---|---|
+| Physical Stock Taking | `trhpstk` + `trdpstk1detail` | 5 headers, 0 lines | nothing to post |
+| Stock transfer user → user | `trhstktrf` | 1 (in scope), 0 lines | no branch change |
+| Serial master entries | `trdstkin5serialno` | 22 | kept in the GRN remark (row 15); our serial master (`prodbatchsrno`) has no GRN link and the sold serials of module 7 are not in it either |
+
+---
+
+## 6. Verification (latest run)
+
+Run ALL, 0 errors:
+
+| Check | Client | Ours |
 |---|---|---|
-| D1 | Engineer issue / return | TO USER → **MRO**, FROM USER → **GRN** at the office branch; Supplier/Contractor blank; user name in remark ("Stock-OUT TO USER … User: name") |
-| D2 | Office transfers | OUT ↔ IN pair (`nstkouno`) with the **same items** (OUT qty/defective = IN accepted/rejected per item) → one **GTA** (`intransit=0`), number/date = Stock-OUT, remark "Received by Stock-IN …". Pair with different items → OUT as **MRO** + IN as **GRN** (each branch keeps its own real movement). OUT to office with no IN → **GTA in transit** (`intransit=1`, stock at branch 0). IN from office with no OUT → **GRN** |
-| D3 | Stock sold | **SAL** rows for migrated Sales Invoice lines (branches 3–6, product type ≠ 's', qty ≠ 0): `qty` −, `dqty` 0, date/createdon = invoice date, `modulecode` = `sal_order_det.code` — same as `SalesInventoryTrigger`. Checked: no invoice is "against unbilled challans" and no Stock-OUT line points to an invoice → no double deduction |
-| D4 | Warranty parts on calls (`trdcalls3parts`, 6,858) | with the Call Entry module |
-| D5 | Acceptance | after the run: EdifyBiz stock per branch + product = eBizWiz (accepted in − out − sold ± transfers) |
-
-Exe notes (Stock module = menu 8, run after Sales Invoice):
-- **Defective qty on MRO/GTA:** the app's `InventoryTrigger` writes MRO/GTA `dqty` positive (it would *add* damaged stock when it leaves). The exe writes `dqty` **negative** at the sending branch (and + at the receiving branch for GTA) so damaged stock is correct. Only 37 Stock-OUT lines have defective qty.
-- GRN `grntype` = Stock-IN type name; full `nstkintype` group seeded into `miscellaneous(GRN/grntype)` for the Type dropdown.
-- Header/line `createdon` = document date; SI2384 (2202-11-10) uses its entry date.
-- `productstocksummary` rebuilt from `stocktrans` at the end (update existing rows, insert missing).
-- Can run on the current DB after modules 1–7 (stock tables are empty); re-running needs a fresh restore (no delete logic).
+| Stock In | 7,150 | **6,433** GRN + **717** received inside a GTA |
+| Stock Out | 1,326 | MRO **559** (526 to user + 8 to party + 25 pairs with different items) + GTA **767** (50 in transit) |
+| MRO total | — | **665** = 559 + 106 spare-part MROs of module 11 |
+| GRN → PO | 4,754 GRNs against an order | **4,754** `module = 'PO'` with the PO code |
+| Ledger | — | GRN 29,007 rows (+81,883 / damaged +571), MRO 1,021 (−2,080 / −9), GTA 3,190 (net 0), SAL 18,629 (−40,508); every row points to an existing line |
+| **Closing stock** per branch + item = client (**opening** + Stock In accepted − Stock Out − sold − call spares), good and damaged | 5,652 office + item keys with a balance (`mststkdt.ngoodbal` / `ndefbal`) | **4,352 / 4,352** stock-product keys equal the client balance: good **341,766 = 341,766**, damaged **663 = 663** (2,501 "eBizWiz balance adjustment" JVs, good +396 / −35,361, damaged +3). Negative balances 118 rows / −546 on both sides. Service items (17 keys, client 310 units) hold no stock in EdifyBiz |
+| Summary vs ledger | — | `productstocksummary` 6,367 rows = `stocktrans` on 6,367 of 6,367 |
+| Negative closing stock | client stock also negative on the same items | 282 rows |
 
 ---
 
-## Verified (run 2026-09-15, module 8 on the migrated DB, 0 errors)
+## 7. Notes
 
-- Documents: Stock-IN 7,150 = GRN 6,433 + 717 received inside a GTA; Stock-OUT 1,326 = MRO 559 (526 to user + 8 to party + 25 transfer pairs with different items) + GTA 767 (50 in transit — only 3 of them have lines; 65 Stock-OUT and 95 Stock-IN documents have no lines in eBizWiz either).
-- **Closing stock per branch + product = eBizWiz (accepted in − out − sold) on 6,349 of 6,349** (good and defective qty). Compared by product name — 1,733 product names are duplicated in the target, the exe resolves them the same way as the Sales Invoice module.
-- GRN from party: PO number 5,971 / 5,971, supplier 5,971 / 5,971, date 5,970 (SI2384 bad source date → entry date).
-- Ledger: GRN 29,007 rows (+81,883), MRO 880 (−1,928), GTA 3,190 (net 0; 20 rows at branch 0 in transit), SAL 18,629 (−40,508); 0 rows pointing to a missing line; no row without batch; 3,414 rows without unit (product has no unit in eBizWiz).
-- SAL not posted on 64 invoice lines: 58 service items, 6 qty 0 (by design).
-- `productstocksummary` 6,367 rows = ledger on 6,367 / 6,367.
-- Samples: GRN SI3151 (HO Mumbai, Steelco S.p.A., PO OP2867, AGAINST ORDER PLACED, Door Gasket 6 @ 177, Default Batch); MRO SO794 (TO USER Pankaj Rane, supplier blank, challan text in remark); GTA SO274 Bangalore → HO Mumbai in transit.
+- **Visibility.** GRN / MRO / GTA lists and views show only documents whose branch is in the user's `users.companybranch`. Module 1 fills it from the client's user–office access (`msduseroffice`) and gives Admin (the migration user) all four branches, so every user sees his offices.
+- **Why so much goes to Remarks.** The GRN has number, date, supplier, branch, PO link, vehicle no., type and project; the MRO has number, date, contractor, invoice link, branch and project; the GTA has from / to branch, in transit, contractor, type, transporter (contact), vehicle, e-way bill and project. The client's dispatch mode / through, docket no / date, reference no / date, user, charges, payment terms, missing qty and serial numbers have no field there, and the forms are not changed.
+- **MRO without Contractor** (657: issues to users and call spares): the MRO form requires a Contractor when the header is edited.
+- **App view quirks (standard screens, left as they are):** the GRN view looks up "GTA No" by `modulecode` without checking `module`, so 502 PO GRNs whose PO code equals a GTA code show that GTA number; the GTA view's "GRN No" has the same kind of join.
+- **Stock checks on edit.** MRO / GTA header edits re-check every line against `productstocksummary`, which is why the summary is rebuilt after all modules that move stock (7, 8, 11).
+- Transfers are matched pair by pair (`trhstkin.nstkouno`): same items → one GTA, so each branch moves exactly what the client moved; different items → the Stock Out as MRO and the Stock In as GRN.
+- **Closing stock = the client balance.** The client balance can be edited directly in eBizWiz (Stock > Change Stock Details), which leaves no transaction, so the ledger (opening + in − out − sold − spares) differed on 2,501 keys (e.g. Cryo Box 2 Inch HO: 1,581 received, nothing issued, balance 0). Row 38a posts one "eBizWiz balance adjustment" stock JV per key, the same standard entry as Opening Stock, dated when the client last changed the balance; the full transaction history stays as migrated.
+- The client keeps its balance per office + item in `mststkdt` (`ngoodbal`, `ndefbal`) = **opening** (`ngoodopbal`, `ndefopbal`) + in − out − sold − call spares. Of the 2,590 rows with an opening balance, 1,901 match this formula only when the opening is added (2 without it), so the opening stock is migrated (row 37) and the closing-stock check must include it.

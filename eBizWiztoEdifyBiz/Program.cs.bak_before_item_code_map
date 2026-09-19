@@ -310,144 +310,6 @@ namespace eBizWiztoEdifyBiz
         }
 
         // First "<number>%" in a label, e.g. "Add : CGST @9%" -> 9, "18% IGST" -> 18. 0 when none.
-        // eBizWiz Master > Office (mstoffice: address, postal code, telephone 1/2, fax, email, website, zone, remarks) -> the branch's
-        // standard EdifyBiz Company > Address fields (companyaddress). Only EMPTY target fields are filled, nothing is overwritten.
-        // City / state stay as set by EnsureGstSetup (every Saksham office bills on the Maharashtra GSTIN). - Aftab Alam
-        public static void FillBranchDetails(SqlConnection tgt)
-        {
-            Dictionary<int, string> zone = new Dictionary<int, string>();
-            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstzones WITH (NOLOCK)").Tables[0].Rows) zone[Int(r["ncode"])] = Str(r["vname"]);
-            // Master > Office > Office Type -> standard Company Address "Office Type" dropdown (miscellaneous module BDS, type Office Type;
-            // companyaddress.type = its code): every active client type + any used by an office in scope, matched by name. - Aftab Alam
-            Dictionary<int, int> typeMap = new Dictionary<int, int>(); int typesAdded = 0;
-            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstofficetype WITH (NOLOCK) WHERE bactive = 1 OR ncode IN (SELECT nofficetype FROM mstoffice WITH (NOLOCK) WHERE ncode IN (" + OfficeIn + "))").Tables[0].Rows)
-            {
-                string nm = Str(r["vname"]); if (nm.Length == 0) continue;
-                object o;
-                using (SqlCommand q = new SqlCommand("SELECT TOP 1 code FROM miscellaneous WHERE module = 'BDS' AND type = 'Office Type' AND name = @n ORDER BY code", tgt)) { q.Parameters.AddWithValue("@n", nm); o = q.ExecuteScalar(); }
-                if (o == null || o == DBNull.Value)
-                    using (SqlCommand ins = new SqlCommand("INSERT INTO miscellaneous (module, type, name, active, makedefault, createdby, createdon, updatedby, updatedon) OUTPUT INSERTED.code VALUES ('BDS', 'Office Type', @n, 1, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
-                    { ins.Parameters.AddWithValue("@n", nm); ins.Parameters.AddWithValue("@cb", MigrationUser); o = ins.ExecuteScalar(); typesAdded++; }
-                typeMap[Int(r["ncode"])] = Convert.ToInt32(o);
-            }
-            Console.WriteLine("  miscellaneous(BDS/Office Type) seeded: " + typesAdded);
-            int n = 0;
-            foreach (DataRow r in GetSrc("SELECT ncode, vcompanyname, vaddress, vpostalcode, vtel1, vtel2, vfax, vemail, vwebsite, vremarks, nzone, nofficetype FROM mstoffice WITH (NOLOCK) WHERE ncode IN (" + OfficeIn + ")").Tables[0].Rows)
-            {
-                string z; zone.TryGetValue(Int(r["nzone"]), out z);
-                // telephone columns are 20 chars; "022 28443636 / 28891439" -> telephone2 + telephone3
-                string t1 = Str(r["vtel1"]), t2 = Str(r["vtel2"]), t3 = "";
-                if (t2.Length > 20 && t2.Contains("/")) { t3 = t2.Substring(t2.IndexOf('/') + 1).Trim(); t2 = t2.Substring(0, t2.IndexOf('/')).Trim(); }
-                using (SqlCommand u = new SqlCommand(@"UPDATE companyaddress SET
-                        address    = CASE WHEN ISNULL(address,'')    = '' THEN @a  ELSE address    END,
-                        pincode    = CASE WHEN ISNULL(pincode,'')    = '' THEN @pc ELSE pincode    END,
-                        telephone1 = CASE WHEN ISNULL(telephone1,'') = '' THEN @t1 ELSE telephone1 END,
-                        telephone2 = CASE WHEN ISNULL(telephone2,'') = '' THEN @t2 ELSE telephone2 END,
-                        telephone3 = CASE WHEN ISNULL(telephone3,'') = '' THEN @t3 ELSE telephone3 END,
-                        fax1       = CASE WHEN ISNULL(fax1,'')       = '' THEN @fx ELSE fax1       END,
-                        email1     = CASE WHEN ISNULL(email1,'')     = '' THEN @em ELSE email1     END,
-                        website1   = CASE WHEN ISNULL(website1,'')   = '' THEN @wb ELSE website1   END,
-                        zone       = CASE WHEN ISNULL(zone,'')       = '' THEN @z  ELSE zone       END,
-                        remark     = CASE WHEN ISNULL(remark,'')     = '' THEN @rm ELSE remark     END,
-                        type       = ISNULL(type, @ty),
-                        updatedby = @cb, updatedon = GETDATE()
-                    WHERE ccode = @cc AND place = @pl", tgt))
-                {
-                    u.Parameters.AddWithValue("@a", PS(Str(r["vaddress"]))); u.Parameters.AddWithValue("@pc", PS(Cap(Str(r["vpostalcode"]), 10)));
-                    u.Parameters.AddWithValue("@t1", PS(Cap(t1, 20))); u.Parameters.AddWithValue("@t2", PS(Cap(t2, 20))); u.Parameters.AddWithValue("@t3", PS(Cap(t3, 20)));
-                    u.Parameters.AddWithValue("@fx", PS(Cap(Str(r["vfax"]), 20))); u.Parameters.AddWithValue("@em", PS(Str(r["vemail"])));
-                    u.Parameters.AddWithValue("@wb", PS(Str(r["vwebsite"]))); u.Parameters.AddWithValue("@z", PS(z ?? ""));
-                    int ty; u.Parameters.AddWithValue("@ty", typeMap.TryGetValue(Int(r["nofficetype"]), out ty) ? (object)ty : DBNull.Value);
-                    u.Parameters.AddWithValue("@rm", PS(Str(r["vremarks"]))); u.Parameters.AddWithValue("@cb", MigrationUser);
-                    u.Parameters.AddWithValue("@cc", CompanyCode); u.Parameters.AddWithValue("@pl", Cap(Str(r["vcompanyname"]), 100));
-                    n += u.ExecuteNonQuery();
-                }
-            }
-            Console.WriteLine("  Branch details (address / phones / email / website / zone / office type) filled from eBizWiz offices: " + n);
-        }
-
-        // Closing stock = the client's own balance. eBizWiz keeps the current stock per office + item in mststkdt (ngoodbal / ndefbal) and
-        // lets users change it directly (Stock > Change Stock Details) without any transaction, so opening + in - out - sold - spares
-        // differs from it on ~2,500 items (e.g. Cryo Box 2 Inch HO: 1,581 received, nothing issued, balance 0). After every stock
-        // movement is posted (modules 8 and 11) one EdifyBiz stock JV per branch + product carries the difference - the same standard
-        // entry as Opening Stock (stockjv module JV + stocktrans JV, app/inventory/openingstock.asp -> InventoryTrigger), remark
-        // "eBizWiz balance adjustment", dated when the client last changed that balance (mststkdt.editedon). Service products hold no
-        // stock and are skipped. Re-run safe: an existing adjustment row of the branch + product is left as it is. - Aftab Alam
-        public static void PostBalanceAdjustment(SqlConnection tgt, Dictionary<int, int> branchByOffice, Dictionary<int, int> prodByItem)
-        {
-            Dictionary<int, int> batchByProd = DefaultBatchByProduct();
-            HashSet<int> service = new HashSet<int>();
-            Dictionary<int, int> unitByProd = new Dictionary<int, int>();
-            foreach (DataRow r in GetTgt("SELECT code, ISNULL(type,'p') AS t, ISNULL(unitcode,0) AS u FROM product WITH (NOLOCK)").Tables[0].Rows)
-            { if (Str(r["t"]).ToLowerInvariant() == "s") service.Add(Int(r["code"])); unitByProd[Int(r["code"])] = Int(r["u"]); }
-            Dictionary<string, decimal[]> ledger = new Dictionary<string, decimal[]>();
-            foreach (DataRow r in GetTgt("SELECT branchcode, productcode, prodbatchcode, SUM(qty) q, SUM(dqty) dq FROM stocktrans WITH (NOLOCK) GROUP BY branchcode, productcode, prodbatchcode").Tables[0].Rows)
-                ledger[Int(r["branchcode"]) + "|" + Int(r["productcode"]) + "|" + Int(r["prodbatchcode"])] = new decimal[] { Dec(r["q"]), Dec(r["dq"]) };
-            HashSet<string> done = new HashSet<string>();
-            foreach (DataRow r in GetTgt("SELECT branchcode, productcode, prodbatchcode FROM stockjv WHERE module = 'JV' AND remark = 'eBizWiz balance adjustment'").Tables[0].Rows)
-                done.Add(Int(r["branchcode"]) + "|" + Int(r["productcode"]) + "|" + Int(r["prodbatchcode"]));
-
-            int rows = 0, skipped = 0; decimal plus = 0, minus = 0, dplus = 0, dminus = 0;
-            foreach (DataRow r in GetSrc("SELECT nofficeid, nitem, SUM(ISNULL(ngoodbal,0)) g, SUM(ISNULL(ndefbal,0)) d, MAX(editedon) ed, MAX(addedon) ad FROM mststkdt WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") GROUP BY nofficeid, nitem ORDER BY nofficeid, nitem").Tables[0].Rows)
-            {
-                int br, prod, batch;
-                if (!branchByOffice.TryGetValue(Int(r["nofficeid"]), out br) || !prodByItem.TryGetValue(Int(r["nitem"]), out prod) || !batchByProd.TryGetValue(prod, out batch)) { skipped++; continue; }
-                if (service.Contains(prod)) continue;
-                string k = br + "|" + prod + "|" + batch;
-                if (done.Contains(k)) continue;
-                decimal[] l; if (!ledger.TryGetValue(k, out l)) l = new decimal[] { 0m, 0m };
-                decimal dq = Dec(r["g"]) - l[0], ddq = Dec(r["d"]) - l[1];
-                if (dq == 0 && ddq == 0) continue;
-                object dt = r["ed"] != DBNull.Value ? r["ed"] : (r["ad"] != DBNull.Value ? r["ad"] : (object)DateTime.Today);
-                int unit; unitByProd.TryGetValue(prod, out unit);
-                int jv;
-                using (SqlCommand c = new SqlCommand(@"INSERT INTO stockjv (date, branchcode, productcode, prodbatchcode, qty, dqty, module, modulecode, remark, unit, createdby, createdon, updatedby, updatedon, price, number)
-                                                       OUTPUT INSERTED.code
-                                                       VALUES (@d, @b, @p, @pb, @q, @dq, 'JV', 0, 'eBizWiz balance adjustment', @u, @cb, @d, @cb, @d, 0, '')", tgt))
-                {
-                    c.Parameters.AddWithValue("@d", dt); c.Parameters.AddWithValue("@b", br); c.Parameters.AddWithValue("@p", prod); c.Parameters.AddWithValue("@pb", batch);
-                    c.Parameters.AddWithValue("@q", dq); c.Parameters.AddWithValue("@dq", ddq); c.Parameters.AddWithValue("@u", unit); c.Parameters.AddWithValue("@cb", MigrationUser);
-                    jv = Convert.ToInt32(c.ExecuteScalar());
-                }
-                using (SqlCommand c = new SqlCommand(@"INSERT INTO stocktrans (date, branchcode, productcode, prodbatchcode, qty, dqty, unit, module, modulecode, createdby, createdon, updatedby, updatedon)
-                                                       VALUES (@d, @b, @p, @pb, @q, @dq, @u, 'JV', @jv, @cb, @d, @cb, @d)", tgt))
-                {
-                    c.Parameters.AddWithValue("@d", dt); c.Parameters.AddWithValue("@b", br); c.Parameters.AddWithValue("@p", prod); c.Parameters.AddWithValue("@pb", batch);
-                    c.Parameters.AddWithValue("@q", dq); c.Parameters.AddWithValue("@dq", ddq); c.Parameters.AddWithValue("@u", unit); c.Parameters.AddWithValue("@jv", jv); c.Parameters.AddWithValue("@cb", MigrationUser);
-                    c.ExecuteNonQuery();
-                }
-                rows++; if (dq > 0) plus += dq; else minus += dq; if (ddq > 0) dplus += ddq; else dminus += ddq;
-            }
-            Console.WriteLine("  eBizWiz balance adjustment (JV): " + rows + " branch+item rows, good +" + plus.ToString("0.##", CultureInfo.InvariantCulture) + " / " + minus.ToString("0.##", CultureInfo.InvariantCulture) +
-                              ", damaged +" + dplus.ToString("0.##", CultureInfo.InvariantCulture) + " / " + dminus.ToString("0.##", CultureInfo.InvariantCulture) + "  (skipped, item not migrated: " + skipped + ")");
-        }
-
-        // eBizWiz item -> EdifyBiz product for every document line. Module 2 creates one product per item (casno = Item Code,
-        // name = Name). 1,732 client names are shared by 8,423 items (same model name, different Item Code), so the old name-only
-        // match sent every line of such an item to the FIRST product of that name. Item Code is unique per item: match on
-        // Item Code + Name, then Item Code, and Name only as the last resort. - Aftab Alam
-        public static void MapItemsToProducts(Dictionary<int, int> map)
-        {
-            Dictionary<string, int> byPair = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            Dictionary<string, int> byCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (DataRow r in GetTgt("SELECT code, casno, name FROM product WITH (NOLOCK) ORDER BY isdeleted, code").Tables[0].Rows)
-            {
-                string cs = Str(r["casno"]), n = Str(r["name"]); int c = Int(r["code"]);
-                if (cs.Length > 0 && !byPair.ContainsKey(cs + "|" + n)) byPair[cs + "|" + n] = c;
-                if (cs.Length > 0 && !byCode.ContainsKey(cs)) byCode[cs] = c;
-                if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = c;
-            }
-            foreach (DataRow r in GetSrc("SELECT ncode, vitemcode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            {
-                int nc = Int(r["ncode"]); if (map.ContainsKey(nc)) continue;
-                string cs = Cap(Str(r["vitemcode"]), 50), n = Cap(Str(r["vname"]), 150); int c;
-                if (cs.Length > 0 && byPair.TryGetValue(cs + "|" + n, out c)) map[nc] = c;
-                else if (cs.Length > 0 && byCode.TryGetValue(cs, out c)) map[nc] = c;
-                else if (n.Length > 0 && byName.TryGetValue(n, out c)) map[nc] = c;
-            }
-        }
-
         // eBizWiz check sets (mstcheckset + msdcheckset) = EdifyBiz Checklist Master (taskchecklistmaster + taskchecklistmasterdet:
         // title, days, sort - read by app/task.asp when a checklist template is applied). The document check items themselves are in
         // taskchecklist (Task Check List tab); the set name therefore no longer goes into any remark. Sets of offices 2/3/4/6 that are
@@ -941,9 +803,7 @@ namespace eBizWiztoEdifyBiz
             foreach (DataRow r in GetTgt("SELECT name FROM desigmaster").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0) existing.Add(n); }
 
             int added = 0;
-            //foreach (DataRow r in GetSrc("SELECT DISTINCT ndesignation FROM msdparty WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ndesignation IS NOT NULL AND ndesignation > 0").Tables[0].Rows)
-            // Master > Users and Rights > Designation: every ACTIVE client designation (all 7,677 are active) + any used by a person - same rule as the other masters. - Aftab Alam
-            foreach (DataRow r in GetSrc("SELECT ncode AS ndesignation FROM mstdesignation WITH (NOLOCK) WHERE bactive = 1 UNION SELECT DISTINCT ndesignation FROM msdparty WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ndesignation IS NOT NULL AND ndesignation > 0").Tables[0].Rows)
+            foreach (DataRow r in GetSrc("SELECT DISTINCT ndesignation FROM msdparty WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ndesignation IS NOT NULL AND ndesignation > 0").Tables[0].Rows)
             {
                 string nm = LookInt(_designations, Int(r["ndesignation"]));
                 if (nm.Length == 0 || existing.Contains(nm)) continue;
@@ -1002,7 +862,6 @@ namespace eBizWiztoEdifyBiz
         static void EnsureUsers(SqlConnection tgt)
         {
             HashSet<string> usedUsernames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            HashSet<string> createdNames = new HashSet<string>();
             using (SqlCommand c = new SqlCommand("SELECT code, name, username FROM users", tgt))
             using (SqlDataReader r = c.ExecuteReader())
                 while (r.Read())
@@ -1045,33 +904,8 @@ namespace eBizWiztoEdifyBiz
                     ins.Parameters.AddWithValue("@cb", MigrationUser);
                     int code = Convert.ToInt32(ins.ExecuteScalar());
                     _userByName[nm] = code; created++;
-                    createdNames.Add(nm);
                 }
             }
-            // Master > Users and Rights: a client user who is inactive in eBizWiz (no active mstusers row with that name) gets the
-            // standard EdifyBiz suspend flag (users.suspenduser = 1 -> login refused "account has been suspended"); mobile and postal
-            // code go to users.mobile_no / zipcode. Only users created by the migration are touched. - Aftab Alam
-            Dictionary<string, object[]> det = new Dictionary<string, object[]>(StringComparer.OrdinalIgnoreCase);   // name -> { active, mobile, zip }
-            foreach (DataRow r in GetSrc("SELECT vname, bactive, vmobile, vpostalcode FROM mstusers WITH (NOLOCK) ORDER BY bactive DESC, ncode").Tables[0].Rows)
-            {
-                string nm = Cap(Str(r["vname"]), 150); if (nm.Length == 0) continue;
-                object[] d; if (!det.TryGetValue(nm, out d)) det[nm] = d = new object[] { false, "", "" };
-                if (Bool(r["bactive"])) d[0] = true;
-                if (((string)d[1]).Length == 0) d[1] = Cap(Str(r["vmobile"]), 50);
-                if (((string)d[2]).Length == 0) d[2] = Str(r["vpostalcode"]);
-            }
-            int suspended = 0;
-            foreach (string nm in createdNames)
-            {
-                object[] d; if (!det.TryGetValue(nm, out d)) continue;
-                using (SqlCommand u = new SqlCommand("UPDATE users SET suspenduser = @s, mobile_no = ISNULL(NULLIF(mobile_no,''), @m), zipcode = ISNULL(NULLIF(zipcode,''), @z) WHERE code = @c", tgt))
-                {
-                    u.Parameters.AddWithValue("@s", (bool)d[0] ? 0 : 1); u.Parameters.AddWithValue("@m", PS((string)d[1])); u.Parameters.AddWithValue("@z", PS((string)d[2]));
-                    u.Parameters.AddWithValue("@c", _userByName[nm]); u.ExecuteNonQuery();
-                }
-                if (!(bool)d[0]) suspended++;
-            }
-            Console.WriteLine("  Users inactive in eBizWiz -> suspended: " + suspended);
             Console.WriteLine("  Users (ALL source users): " + _userByName.Count + " in target, " + created + " created.");
         }
 
@@ -1240,7 +1074,6 @@ namespace eBizWiztoEdifyBiz
                 }
                 _branchByOffice[office] = code;
             }
-            FillBranchDetails(tgt);   // Master > Office -> Company > Address fields - Aftab Alam
         }
 
         static void LoadPersons()
@@ -1595,9 +1428,7 @@ namespace eBizWiztoEdifyBiz
         {
             string[] colors = { "#29BF94", "#FBC617", "#C068F7", "#04C842", "#D3903E", "#BEBED0", "#DDEE7A", "#FDC425", "#a83886", "#B4B6B6", "#3865a8", "#da610b" };
             int i = 0;
-            //foreach (DataRow r in GetSrc("SELECT DISTINCT nitemtype FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND nitemtype IS NOT NULL AND nitemtype > 0 ORDER BY nitemtype").Tables[0].Rows)
-            // Master > Item > Item Type: every ACTIVE client type (as listed on the client screen) + any inactive one used by an item - same rule as currency / party type. - Aftab Alam
-            foreach (DataRow r in GetSrc("SELECT ncode AS nitemtype FROM mstitemtype WITH (NOLOCK) WHERE bactive = 1 UNION SELECT DISTINCT nitemtype FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND nitemtype IS NOT NULL AND nitemtype > 0 ORDER BY nitemtype").Tables[0].Rows)
+            foreach (DataRow r in GetSrc("SELECT DISTINCT nitemtype FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND nitemtype IS NOT NULL AND nitemtype > 0 ORDER BY nitemtype").Tables[0].Rows)
             {
                 int id = Int(r[0]); ItemType it;
                 if (!_srcItemType.TryGetValue(id, out it)) continue;
@@ -1855,7 +1686,6 @@ namespace eBizWiztoEdifyBiz
                 SeedCategories(tgt);
                 SeedSalesStageAndLostReason(tgt);
                 SeedInqMiscMap(tgt, "Inquiry Source", "ninquirysource", "trhinqry", _inqSource, true);
-                SyncInquiryMasterActive(tgt);   // client Active flag -> miscellaneous.active - Aftab Alam
                 BuildCustomerMap(tgt);
                 BuildBranchByContact(tgt);
                 EnsureUserByCode();
@@ -2063,23 +1893,6 @@ namespace eBizWiztoEdifyBiz
             _officeName = SrcLookupInt("SELECT ncode, vcompanyname FROM mstoffice WITH (NOLOCK)");
         }
 
-        // Master > Inquiry (Inquiry Category / Inquiry Source / Lost Reason / Sales Stage) are seeded as full masters. The client
-        // screens list only ACTIVE rows and our dropdowns read miscellaneous.active = 1, so a value that is inactive in eBizWiz
-        // (and has no active row of the same name) gets active = 0: it no longer shows in the dropdown but documents that carry it
-        // still show it on the view (views look the name up by code). - Aftab Alam
-        static void SyncInquiryMasterActive(SqlConnection tgt)
-        {
-            string[,] m = { { "Category", "mstinquirycategory" }, { "Inquiry Source", "mstinquirysource" }, { "Loss Reason", "mstorderlostreason" }, { "Sales Stage", "mstsalesstage" } };
-            for (int i = 0; i < m.GetLength(0); i++)
-            {
-                int off = 0;
-                foreach (DataRow r in GetSrc("SELECT LTRIM(RTRIM(vname)) AS n FROM " + m[i, 1] + " WITH (NOLOCK) WHERE ISNULL(bactive,0) = 0 AND LTRIM(RTRIM(ISNULL(vname,''))) <> '' AND LTRIM(RTRIM(vname)) NOT IN (SELECT LTRIM(RTRIM(vname)) FROM " + m[i, 1] + " WITH (NOLOCK) WHERE bactive = 1 AND vname IS NOT NULL)").Tables[0].Rows)
-                    using (SqlCommand u = new SqlCommand("UPDATE miscellaneous SET active = 0, updatedby = @cb, updatedon = GETDATE() WHERE module = 'Inquiry' AND type = @t AND name = @n AND ISNULL(active,1) = 1", tgt))
-                    { u.Parameters.AddWithValue("@t", m[i, 0]); u.Parameters.AddWithValue("@n", Str(r["n"])); u.Parameters.AddWithValue("@cb", MigrationUser); off += u.ExecuteNonQuery(); }
-                Console.WriteLine("  miscellaneous(Inquiry/" + m[i, 0] + ") set inactive as in eBizWiz: " + off);
-            }
-        }
-
         static void SeedSalesStageAndLostReason(SqlConnection tgt)
         {
             _mapSalesStage = SeedInqMiscMap(tgt, "Sales Stage", "nsalesstage", "trhinqry", _salesStage, true);
@@ -2212,14 +2025,13 @@ namespace eBizWiztoEdifyBiz
             Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = Int(r["code"]); }
 
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{
-                //int ncode = Int(r["ncode"]);
-                //string nm = Cap(Str(r["vname"]), 150);
-                //int code;
-                //if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
-            //}
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            {
+                int ncode = Int(r["ncode"]);
+                string nm = Cap(Str(r["vname"]), 150);
+                int code;
+                if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
+            }
         }
 
         static void LoadPersons(SqlConnection tgt)
@@ -2509,10 +2321,6 @@ namespace eBizWiztoEdifyBiz
                 HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 CollectNames("nactiontaken", _actTaken, names);
                 CollectNames("nactiontobetaken", _actToBe, names);
-                // Master > Inquiry > Action Taken / Action To Be Taken: every ACTIVE client value too (our Action Taken and Purpose
-                // dropdowns both read followupremarks), not only the ones used on migrated actions - same rule as other masters. - Aftab Alam
-                foreach (DataRow r in GetSrc("SELECT vname FROM mstactiontaken WITH (NOLOCK) WHERE bactive = 1 UNION SELECT vname FROM mstactiontobetaken WITH (NOLOCK) WHERE bactive = 1").Tables[0].Rows)
-                { string nm = Str(r["vname"]); if (nm.Length > 0) names.Add(nm); }
 
                 foreach (string nm in names)
                 {
@@ -3028,14 +2836,13 @@ namespace eBizWiztoEdifyBiz
             Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = Int(r["code"]); }
 
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{
-                //int ncode = Int(r["ncode"]);
-                //string nm = Cap(Str(r["vname"]), 150);
-                //int code;
-                //if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
-            //}
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            {
+                int ncode = Int(r["ncode"]);
+                string nm = Cap(Str(r["vname"]), 150);
+                int code;
+                if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
+            }
         }
 
         static void LoadPersons(SqlConnection tgt)
@@ -3711,14 +3518,13 @@ namespace eBizWiztoEdifyBiz
             Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = Int(r["code"]); }
 
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{
-                //int ncode = Int(r["ncode"]);
-                //string nm = Cap(Str(r["vname"]), 150);
-                //int code;
-                //if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
-            //}
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            {
+                int ncode = Int(r["ncode"]);
+                string nm = Cap(Str(r["vname"]), 150);
+                int code;
+                if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
+            }
         }
 
         static void LoadPersons(SqlConnection tgt)
@@ -4326,14 +4132,13 @@ namespace eBizWiztoEdifyBiz
             Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = Int(r["code"]); }
 
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{
-                //int ncode = Int(r["ncode"]);
-                //string nm = Cap(Str(r["vname"]), 150);
-                //int code;
-                //if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
-            //}
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            {
+                int ncode = Int(r["ncode"]);
+                string nm = Cap(Str(r["vname"]), 150);
+                int code;
+                if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
+            }
         }
 
         static void EnsureBranches(SqlConnection tgt)
@@ -4883,14 +4688,13 @@ namespace eBizWiztoEdifyBiz
         {
             Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = Int(r["code"]); }
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{
-                //int ncode = Int(r["ncode"]);
-                //string nm = Cap(Str(r["vname"]), 150);
-                //int code;
-                //if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
-            //}
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            {
+                int ncode = Int(r["ncode"]);
+                string nm = Cap(Str(r["vname"]), 150);
+                int code;
+                if (nm.Length > 0 && byName.TryGetValue(nm, out code) && !_prodByItem.ContainsKey(ncode)) _prodByItem[ncode] = code;
+            }
         }
 
         static void EnsureBranches(SqlConnection tgt)
@@ -5319,7 +5123,6 @@ namespace eBizWiztoEdifyBiz
         static readonly Dictionary<string, List<string>> _inPayTerms = new Dictionary<string, List<string>>();   // office|stkin -> "term pct% = amount" (trdstkin4payterms, 1 row) - Aftab Alam
         static readonly Dictionary<string, List<string>> _serials = new Dictionary<string, List<string>>();       // office|stkin -> serial texts
         static int _grn, _mro, _gta, _gtaTransit, _lines, _skipLines, _errors, _sal, _pairsSplit, _poLinked;
-        static int _opRows, _opSkip; static decimal _opQty, _opDQty;
 
         public static void Run()
         {
@@ -5382,7 +5185,6 @@ namespace eBizWiztoEdifyBiz
                     catch (Exception ex) { _errors++; if (_errors <= 20) Console.WriteLine("  [ERROR] Stock-IN " + key + ": " + ex.Message); }
                 }
 
-                PostOpeningStock(tgt);   // Master > Item > Item Opening Balance [Office-wise] -> Inventory > Opening Stock - Aftab Alam
                 PostSales(tgt);
                 RebuildSummary(tgt);
 
@@ -5392,7 +5194,6 @@ namespace eBizWiztoEdifyBiz
                 Console.WriteLine("  GTA (office transfer)   : " + _gta + "  (in transit " + _gtaTransit + ")");
                 Console.WriteLine("  Lines                   : " + _lines + "  (skipped, item not migrated: " + _skipLines + ")");
                 Console.WriteLine("  SAL stock-out (invoices): " + _sal + " lines");
-                Console.WriteLine("  Opening stock (JV)      : " + _opRows + " branch+item rows, good " + _opQty.ToString("0.##", CultureInfo.InvariantCulture) + ", damaged " + _opDQty.ToString("0.##", CultureInfo.InvariantCulture) + "  (skipped, item not migrated: " + _opSkip + ")");
                 Console.WriteLine("  Errors                  : " + _errors);
                 Console.WriteLine("-----------------------------------------------------");
             }
@@ -5610,44 +5411,6 @@ namespace eBizWiztoEdifyBiz
             }
         }
 
-        // eBizWiz Item Opening Balance (mststkdt: ngoodopbal / ndefopbal on dopbaldate, per office + item) is part of the client
-        // stock (client balance ngoodbal = opening + in - out - sold - call spares). EdifyBiz standard: Inventory > Opening Stock
-        // (app/inventory/openingstock.asp -> InventoryTrigger module "JV", remark "Opening Stock", child table stockjv) = one
-        // stockjv row + one stocktrans row (module JV, modulecode = stockjv.code); the summary is rebuilt after. Price as the
-        // Opening Stock screen fills it (product price). Skips rows already posted (re-run). - Aftab Alam
-        static void PostOpeningStock(SqlConnection tgt)
-        {
-            HashSet<string> done = new HashSet<string>();
-            foreach (DataRow r in GetTgt("SELECT branchcode, productcode, prodbatchcode FROM stockjv WHERE module = 'JV' AND remark = 'Opening Stock'").Tables[0].Rows)
-                done.Add(Int(r["branchcode"]) + "|" + Int(r["productcode"]) + "|" + Int(r["prodbatchcode"]));
-            foreach (DataRow r in GetSrc("SELECT nofficeid, nitem, ngoodopbal, ndefopbal, dopbaldate, addedon FROM mststkdt WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND (ISNULL(ngoodopbal,0) <> 0 OR ISNULL(ndefopbal,0) <> 0) ORDER BY nofficeid, nitem").Tables[0].Rows)
-            {
-                int br, prod, batch;
-                if (!_branchByOffice.TryGetValue(Int(r["nofficeid"]), out br) || !_prodByItem.TryGetValue(Int(r["nitem"]), out prod) || !_batchByProd.TryGetValue(prod, out batch)) { _opSkip++; continue; }
-                if (!done.Add(br + "|" + prod + "|" + batch)) continue;
-                decimal q = Dec(r["ngoodopbal"]), dq = Dec(r["ndefopbal"]);
-                object dt = r["dopbaldate"] != DBNull.Value && Convert.ToDateTime(r["dopbaldate"]).Year > 1900 ? r["dopbaldate"] : (r["addedon"] != DBNull.Value ? r["addedon"] : (object)DateTime.Today);
-                int unit; _unitByProd.TryGetValue(prod, out unit);
-                int jv;
-                using (SqlCommand c = new SqlCommand(@"INSERT INTO stockjv (date, branchcode, productcode, prodbatchcode, qty, dqty, module, modulecode, remark, unit, createdby, createdon, updatedby, updatedon, price, number)
-                                                       OUTPUT INSERTED.code
-                                                       VALUES (@d, @b, @p, @pb, @q, @dq, 'JV', 0, 'Opening Stock', @u, @cb, @d, @cb, @d, (SELECT ISNULL(price,0) FROM product WHERE code = @p), '')", tgt))
-                {
-                    c.Parameters.AddWithValue("@d", dt); c.Parameters.AddWithValue("@b", br); c.Parameters.AddWithValue("@p", prod); c.Parameters.AddWithValue("@pb", batch);
-                    c.Parameters.AddWithValue("@q", q); c.Parameters.AddWithValue("@dq", dq); c.Parameters.AddWithValue("@u", unit); c.Parameters.AddWithValue("@cb", MigrationUser);
-                    jv = Convert.ToInt32(c.ExecuteScalar());
-                }
-                using (SqlCommand c = new SqlCommand(@"INSERT INTO stocktrans (date, branchcode, productcode, prodbatchcode, qty, dqty, unit, module, modulecode, createdby, createdon, updatedby, updatedon)
-                                                       VALUES (@d, @b, @p, @pb, @q, @dq, @u, 'JV', @jv, @cb, @d, @cb, @d)", tgt))
-                {
-                    c.Parameters.AddWithValue("@d", dt); c.Parameters.AddWithValue("@b", br); c.Parameters.AddWithValue("@p", prod); c.Parameters.AddWithValue("@pb", batch);
-                    c.Parameters.AddWithValue("@q", q); c.Parameters.AddWithValue("@dq", dq); c.Parameters.AddWithValue("@u", unit); c.Parameters.AddWithValue("@jv", jv); c.Parameters.AddWithValue("@cb", MigrationUser);
-                    c.ExecuteNonQuery();
-                }
-                _opRows++; _opQty += q; _opDQty += dq;
-            }
-        }
-
         // Stock sold: migrated Sales Invoice lines (non-service products) -> stocktrans SAL -qty at the invoice branch/date,
         // as SalesInventoryTrigger does. Skips lines already posted. eBizWiz deducts sold stock (stock report column "Sold").
         static void PostSales(SqlConnection tgt)
@@ -5732,9 +5495,8 @@ namespace eBizWiztoEdifyBiz
                 if (n.Length > 0 && !pByName.ContainsKey(n)) pByName[n] = code;
                 _unitByProd[code] = Int(r["unitcode"]); _typeByProd[code] = Str(r["type"]);
             }
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{ string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            { string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
             _batchByProd = DefaultBatchByProduct();
 
             // PO line -> migrated pur_order (branch + purorderno)
@@ -6212,9 +5974,8 @@ namespace eBizWiztoEdifyBiz
             { int cc = Int(r["ccode"]); if (cc > 0 && !_branchByContact.ContainsKey(cc)) _branchByContact[cc] = Int(r["code"]); }
             Dictionary<string, int> pByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !pByName.ContainsKey(n)) pByName[n] = Int(r["code"]); }
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{ string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            { string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
 
             // contact persons: same resolution as Customer Quotation (party|person -> mltcontact code)
             Dictionary<string, int> mltMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -6628,9 +6389,8 @@ namespace eBizWiztoEdifyBiz
             { int cc = Int(r["ccode"]); if (cc > 0 && !_branchByContact.ContainsKey(cc)) _branchByContact[cc] = Int(r["code"]); }
             Dictionary<string, int> pByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !pByName.ContainsKey(n)) pByName[n] = Int(r["code"]); }
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{ string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            { string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
             // AMC quotations migrated by module 9 (cors CQ, modulename 'AMC Contract')
             foreach (DataRow r in GetTgt("SELECT code, branchcode, inqref FROM inqcs WHERE cors='CQ' AND modulename='AMC Contract' AND inqref IS NOT NULL").Tables[0].Rows)
             { string k = Int(r["branchcode"]) + "|" + Str(r["inqref"]); if (!_cqByKey.ContainsKey(k)) _cqByKey[k] = Int(r["code"]); }
@@ -6888,9 +6648,8 @@ namespace eBizWiztoEdifyBiz
         {
             Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = Int(r["code"]); }
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{ string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && byName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            { string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && byName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
         }
     }
 
@@ -7185,9 +6944,8 @@ namespace eBizWiztoEdifyBiz
                 foreach (DataRow r in GetTgt("SELECT code, type FROM product").Tables[0].Rows) _prodType[Int(r["code"])] = Str(r["type"]).ToLowerInvariant();
                 Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 foreach (DataRow r in GetTgt("SELECT code, name FROM product WITH (NOLOCK) ORDER BY isdeleted").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !byName.ContainsKey(n)) byName[n] = Int(r["code"]); }
-                //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-                //{ string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && byName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
-                MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+                foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+                { string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && byName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
                 foreach (DataRow r in GetTgt("SELECT code, pmscomplaintno, ccode, contactperson, contactbranch, assignedto FROM contractcall WITH (NOLOCK) WHERE pmscomplaintno IS NOT NULL").Tables[0].Rows)
                 { string k = Str(r["pmscomplaintno"]); if (!_callByNo.ContainsKey(k)) _callByNo[k] = new object[] { Int(r["code"]), r["ccode"], r["contactperson"], r["contactbranch"], r["assignedto"] }; }
                 HashSet<string> existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -7389,7 +7147,6 @@ namespace eBizWiztoEdifyBiz
                     try { InsertRow(tgt, h); }
                     catch (Exception ex) { _errors++; if (_errors <= 20) Console.WriteLine("  [ERROR] Call " + Int(h["nofficeid"]) + "|" + Int(h["ncode"]) + " " + Str(h["vtrnno"]) + ": " + ex.Message); }
                 }
-                PostBalanceAdjustment(tgt, _branchByOffice, _prodByItem);   // last stock step: EdifyBiz stock = the client's own balance - Aftab Alam
                 RebuildSummary(tgt);
 
                 Console.WriteLine("-----------------------------------------------------");
@@ -8111,9 +7868,8 @@ namespace eBizWiztoEdifyBiz
                 if (n.Length > 0 && !pByName.ContainsKey(n)) pByName[n] = pcd;
                 if (Int(r["unitcode"]) > 0 && !_unitByProd.ContainsKey(pcd)) _unitByProd[pcd] = Int(r["unitcode"]);
             }
-            //foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
-            //{ string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
-            MapItemsToProducts(_prodByItem);   // Item Code + Name (not name only) - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT ncode, vname FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            { string n = Cap(Str(r["vname"]), 150); int c; if (n.Length > 0 && pByName.TryGetValue(n, out c) && !_prodByItem.ContainsKey(Int(r["ncode"]))) _prodByItem[Int(r["ncode"])] = c; }
             foreach (KeyValuePair<int, int> kv in DefaultBatchByProduct()) _batchByProd[kv.Key] = kv.Value;
             foreach (DataRow r in GetTgt("SELECT code FROM product WITH (NOLOCK) WHERE ISNULL(type,'p') = 's'").Tables[0].Rows) _serviceProd.Add(Int(r["code"]));
             // contact persons (party|person -> mltcontact.code), same resolution as the contract / quotation modules

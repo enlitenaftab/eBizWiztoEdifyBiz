@@ -1,5 +1,7 @@
 # Payment (Receipt Entry) — Migration Mapping (eBizWiz → EdifyBiz)
 
+> **Superseded (17/09/2026)** — first draft of 15/09/2026, kept for history only. The implemented and verified mapping is **`13_payment_field_mapping.md`**. Its §3 warning ("receipts without a module become false advances") was right; it is resolved in 13 by billing AMC and call bills as Sales Invoices and allocating the receipts to them.
+
 Client module **Payment Receipt Entry** (`/Receipts/receipt.aspx`). Read as: what the client sees → where it sits in the client DB → which column it goes to in our DB.
 
 EdifyBiz target = the **Payment** module (`/edify/payment/`, backend `app/payment.asp` action `addpaymentinout`, JS `assets/scripts/payment.js`). A receipt = one `payments` row (`inout = 0`); the split against invoices = `paymentdetails` rows (`paycode` → `payments.code`). **No form changes** — only fields the existing Payment form already has.

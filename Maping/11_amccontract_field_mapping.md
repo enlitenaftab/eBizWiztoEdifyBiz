@@ -1,144 +1,185 @@
-# AMC Contract — Migration Mapping (eBizWiz → EdifyBiz)
+# 11. Contract Sales → AMC Contract (+ bill invoices, + warranty of sold serials)
 
-Client menu **Sales → Contracts → Contract Sales** (`trhcontr`, number prefix `MC`). Read as: what the client has → where it sits in the client DB → which table/column it goes to in our DB.
-**Status: approved 2026-09-15 — exe module 10 "AMC Contract" built; no form change (see Build status).** Checked in the client DB, our DB and the project code (`amc/app/contract.aspx.cs`, `amc/contract/default.asp`, `amc/scripts/contract.js`, `amc/app/complaint.aspx.cs`), plus the Cona reference DB.
+Format: see `00_MAPPING_FORMAT.md`.
 
-Source (offices 2/3/4/6): `trhcontr` 4,528 headers · `trdcontr1items` 5,283 product lines · `trdcontr2itemsdet` 7,187 serial rows · `trdcontr3bills` 7,618 bills (4,520 contracts) · `trdcontr7pmvisit` 14,219 PM visits · `trdcontr4posttaxchgs` 6,012 charges (3,858 contracts, 3,993 GST rows) · `trdcontr5tech` 0 · `trdcontr6checks` 0.
+## 1. Overview
 
----
-
-## 0) EdifyBiz AMC Contract (standard, saksham = generic path)
-
-| Screen part | Table | Note (from code) |
+| | Client (eBizWiz) | Ours (EdifyBiz) |
 |---|---|---|
-| Contract header | `amc` | form `amc/contract/default.asp`, save `SqlOperation("amc")` |
-| Equipment lines | `contractdetails` | one row per serial (`srno` free text), `amount`, `intervals` = PMS visits per year (0/1/2/3/4/6/12) |
-| PMS visits | `contractcall` `type='PMS'`, `contractdtcode` = `contractdetails.code` | app creates them from `intervals`; status from `status` module `'AMC'` |
-| Billing schedule | `billingcycle` (`amccode`, `billingno`, `billingdate`, `amount`, `type='BILL'`, `salcode`) | Billing Cycle **tab hidden for saksham**; list payment status reads it |
-| Link to quotation | `amc.module='CQ'`, `amc.modulecode = inqcs.code` | view shows the quotation no. |
-| Renewal | `amc.oldcontractcode` (+ old `renew = 1`) | same as the Renew button |
-| Tax | none on the contract | tax appears only when billed as a Sales Invoice |
-
-Masters in our DB: `amctype` = 1 Comprehensive · 2 Non-Comprehensive · 3 Warranty (stored as the code text, e.g. '1'); `amcplan` empty; **`status` module 'AMC' empty** — the app looks up `name='Open'` and `behavior='Completed'` (Cona: Open/Pending, In-Process/Pending, Closed/Completed). Autonumber 'AMC Contract' not configured.
-
-⚠ `amc.salcode` must **not** be set to a migrated invoice: `deleteSalesEntry` (`contract.aspx.cs` ~5296) deletes the linked `sal_order` + lines + tax + adjustments whenever the contract header or a line is edited.
+| Screen / menu | **Sales → Contracts → Contract Sales** ("Contract Entry") — header, *Contract Items* (View Sr. No. = serial rows), bills, PM visits; plus the **warranty** kept on Warranty Sales (View Serial No. + PM visit schedule) | **AMC → Contract** (`/edify/amc/contract/`) — header, equipment lines, Billing Cycle, All Complaints, All PMS, Invoice, Expense tabs; billed bills as **GST Sales → Sales Invoice** (label "AMC Contract Bill"); invoice view → "AMC Contracts" |
+| Tables | `trhcontr` (header), `trdcontr1items` (product lines), `trdcontr2itemsdet` (serial rows), `trdcontr3bills` (bills), `trdcontr7pmvisit` (PM visits), `trdcontr4posttaxchgs` (charges); warranty: `trhsales`, `trdsales2itemsdet`, `trdsales7pmvisit`; masters `mstfixedselection` (contract is / type), `mstpaymentschedule`, `msttermset`, `mstcheckset` + `msdcheckset`, `mstinquirysource` | `amc` (header), `contractdetails` (one per serial), `billingcycle` (bills), `sal_order` + `sal_order_det` + `sal_tax` / `sal_adjust` + `labelrelation` (bill invoices), `contractcall` `type='PMS'` (PM visits); masters `amctype` (Comprehensive / Non-Comprehensive / Warranty), `status` (module AMC), Checklist Master `taskchecklistmaster` + `taskchecklistmasterdet` |
+| Code | — | form + view `amc/contract/default.asp`, JS `amc/scripts/contract.js`, backend `amc/app/contract.aspx.cs` |
+| Exe | — | module **10. AMC Contract** — classes `AmcContract`, `WarrantyContract` and `AmcBillInvoice` (in that order) in `Program.cs` (after modules 1–9) |
+| Scope | offices 2, 3, 4, 6 (1 and 5 are WinMax test offices) — 4,528 contracts; 4,000 billed bills; 4,262 invoices with warranty serials | |
+| Status | | migrated and verified |
 
 ---
 
-## 1) Header → `amc`
+## 2. Field mapping
 
-| Client (eBizWiz) | Client DB (`trhcontr`) | Our DB (`amc`) | Note |
+### 2.1 Contract header → `amc`
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 1 | Trn. No. | `trhcontr.vtrnprefix` + `ntrnno` | `amc.contractno` | Contract Number | Contract No | `MC…` (restarts per office) |
+| 2 | Trn. Date | `dtrndate` | `amc.contractdate` | Contract Date | Contract Date | |
+| 3 | Party | `nparty` → `mstparty` | `amc.ccode` | Contact Name | Customer | party → contact (module 1) |
+| 4 | (Bill To) | the party's default address | `amc.contactbranch` | — | Customer Billing Branch ✚ | place - address; the Contact Branch form field is medispec-only |
+| 5 | Party Contact | `npartycontact` → `msdparty` | `amc.contactperson` | Contact Person | Contact Person | `mltcontact.code` |
+| 6 | Sales Person | `nsalesman` → `mstusers` | `amc.executive` | Contract Executive Name | Executive | user by name; Admin when blank |
+| 7 | AMC Quote No. | `namcquoteno` → migrated AMC quotation (branch + `QA` no.) | `amc.module = 'CQ'`, `modulecode = inqcs.code` | Quotation | Quotation No | 4,165 |
+| 8 | Pymt. Schedule + B / E of Period | `npaymentschedule` → `mstpaymentschedule`, `vbegorend` | `amc.paymentterms` | Payment Terms | Payment Terms | `Half Yearly - Beginning of Period` (all 4,528) |
+| 9 | (contract type) | serial `ncontrtype` | `amc.amctype` | AMC Type | AMC Type | 1 Comprehensive / 2 Non-Comprehensive (type of most serials) |
+| 10 | (period) | serial `dstartdate`, `denddate`, `nmonths` | `amc.startdate`, `enddate`, `contractyears`, `contractmonths` | Start / End Date, Years / Months | same | earliest start – latest end; months ÷ 12 |
+| 11 | (renewal) | line `ncontractis` = TRANSFER FROM CONTRACT, `npreviousno` | `amc.oldcontractcode` (previous `renew = 1`) | — | Old Contract | 2,935 renewals; previous contracts `renew = 1` 3,308 |
+| 12 | P.O. No. / P.O. Date | `vpono`, `dpodate` | `amc.ponum`, `podate` | PO Number / PO Date | same | 21 |
+| 13 | Campaign | `ntrhcampa` | — | — | — | 0 contracts |
+| 14 | Sales Source | `nsalessource` → `mstinquirysource` | part of `amc.remarks` | Remark | Remark | `Sales Source: IN OFFICE (SAKSHAM)` (1) |
+| 15 | Terms & Cond. | `nterms` → `msttermset` | part of `amc.remarks` | Remark | Remark | `Terms & Cond.: …` (741); `amc` has no terms field |
+| 16 | Check List | `ncheckset` → `mstcheckset` | — | — | — | the set is seeded as a Checklist Master (§3); its name is not written into the remark; AMC contracts have no check items in eBizWiz |
+| 17 | Ref. No. / Ref. Date, Remarks, Comment | `vrefno`, `drefdate`, `vremarks`, `vcomment` | `amc.remarks` | Remark | Remark | labelled |
+| 18 | Trn. Total, charges, amount received | `ntotalamount`, `trdcontr4posttaxchgs`, `namountrecd` | part of `amc.remarks` | Remark | Remark | `Charges (eBizWiz): …`, `eBizWiz Contract Total: …`, `Amount Received: …` — no tax on the standard contract (the tax is on the bill invoices, 2.4) |
+| 19 | Select Letterhead to print | `vletterhead` | — | — | — | print option |
+| 20 | (office) | `nofficeid` | `amc.branch` | Branch | Branch | branch 3–6 |
+| 21 | — | — | `amc.salcode` | — | — | **never set**: editing a contract deletes the invoice in `salcode`; bills link through `billingcycle.salcode` (2.4) |
+
+### 2.2 Contract Items → `contractdetails` (one per serial)
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 22 | Item / Item Code | `trdcontr1items.nitem` | `contractdetails.productcode` | Product | Product | product by Item Code (module 2, `product.casno`) |
+| 23 | Serial No. | `trdcontr2itemsdet.vserialno` | `contractdetails.srno` | Serial No | Serial No | each serial row belongs to its own `ncontr` |
+| 24 | Rate | `nrate` | `contractdetails.amount` | Price | Amount | net rate; master rate / discount % in the line remark |
+| 25 | Location | `vlocation` | `contractdetails.location` | Area | Location | |
+| 26 | First installation | `dfirstinstdate` | `contractdetails.installationdate` | Installation Date | Installation Date | 2,271 |
+| 27 | (serial period) | `dstartdate`, `denddate` | `contractdetails.startdate`, `enddate` | Start / End | same | |
+| 28 | PM visits | `npmvisits` / `nmonths` | `contractdetails.intervals` | Visits | Visits | visits per year when 0/1/2/3/4/6/12 |
+| 29 | Contract Is = TRANSFER FROM WARRANTY + previous invoice | `ncontractis`, `npreviousno` → `trhsales` | `contractdetails.invoiceno`, `invoicedate` | Invoice No / Date | same | 1,113 serials |
+| 30 | Contract type, months, PM visits, closed, master rate / discount %, contract is, previous contract | `ncontrtype`, `nmonths`, `npmvisits`, `bclosed`, `nmasterrate`, `ndiscountperc`, `ncontractis`, `npreviousno` | `contractdetails.remark` | Product Desc. ✚ | Product Desc. ✚ | labelled lines |
+| 31 | Quantity / Main Item / Auto Generated / Technical Set | `nquantity`, `bmainitem`, `bautoserial`, `ntechnicalset` | `contractdetails.quantity` = 1 | Quantity | Quantity | one line per serial; the flags are entry helpers |
+
+### 2.3 Bills → `billingcycle`
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 32 | Bill date / amount | `trdcontr3bills.dbilldate`, `nbillamount` | `billingcycle.billingdate`, `amount` | Billing Cycle tab ✚ | Billing Cycle tab ✚ | ordered by date; `type = 'BILL'` |
+| 33 | (bill number in the app) | — | `billingcycle.billingno` | Billing Cycle tab ✚ | Billing Cycle tab ✚ | `BILL_` + right 10 of the contract no. + `_n` (app format) |
+| 34 | (billed / unbilled) | `trdcontr3bills.nbillno` | `billingcycle.salcode` | Billing Cycle "Billed" | Billing Cycle "Billed" · Invoice tab ✚ | bill with a number → its Sales Invoice (2.4); bill without a number → Unbilled |
+
+### 2.4 Billed bills → Sales Invoice (`AmcBillInvoice`)
+
+The app bills a contract billing cycle with a Sales Invoice linked by `billingcycle.salcode`; the exe does the same for every eBizWiz bill with a bill number (4,000, unique per office; 4 zero-amount bills are skipped).
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 35 | Bill No. / Bill Date | `trdcontr3bills.nbillno`, `dbilldate` | `sal_order.salorderno`, `salorderdt` (`type = 'SO'`) | Invoice No. / Invoice Date | page title / Sales Date | invoice no. = eBizWiz bill no. |
+| 36 | (contract party, contact, sales person, Bill To, office) | from the migrated contract | `sal_order.ccode`, `contactperson`, `executive`, `cbranchcode` (= `amc.contactbranch`), `branchcode`, `currency` | Customer, Contact Person, Executive, Customer Billing Branch, Branch Name, Currency | Customer Name, Person Name, Executive Name, Customer Billing Branch, Company Branch, Currency | Admin when the contract has no executive; currency INR |
+| 37 | (bill line) | `nbillamount` × contract item total ÷ contract total | `sal_order_det` (product **"Amc Product"**, qty 1, `price` = scaled item value, `prod_desc`) | Product Name, Quantity, Price (Per Unit), Product Description | Particulars, Quantity/Unit, Price/Unit | description `AMC Contract MC… (period), Bill n of m` |
+| 38 | (bill GST / charges) | `trdcontr4posttaxchgs` | `sal_order_det.gst` + `sal_tax`, `sal_adjust` | GST (%), Adjustments row | CGST / SGST / IGST columns, Total GST, Adjustments | contract charges scaled to the bill share (PERCENTAGE stays a %, AMOUNT is scaled); GST by the contract total (`GstByContractTotal`, §7) |
+| 39 | Bill Amount | `nbillamount` | invoice total (lines + `sal_tax` + `sal_adjust`) | — | Grand Total | = eBizWiz bill amount; any rest → one adjustment `Bill rounding (eBizWiz)` (≤ ₹1) or `Bill difference (eBizWiz)` |
+| 40 | (bill reference), Amount Received | `namountrecd` | `sal_order.remarks` | Remarks | Remarks | `AMC Contract: MC… \| Bill n of m (eBizWiz AMC bill) \| eBizWiz Bill Amount: … \| Amount Received: …`; receipts are allocated to these invoices (13) |
+| 41 | — | — | `labelrelation` (label category `SAL`) | Labels | Labels | **AMC Contract Bill** |
+
+### 2.5 PM visits → `contractcall` (`type = 'PMS'`)
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 42 | Scheduled date | `trdcontr7pmvisit.dschpmdate` | `contractcall.date`, `complaintdate` | All PMS tab ✚ / AMC Complaint | same | `contractdtcode` = the serial's line |
+| 43 | Actual date | `dactpmdate` | `status` Closed + `closedt`; else Open | Status | Status | status module AMC: Open (Pending) / Closed (Completed) |
+| 44 | Call | `ncalls` → `trhcalls` | `pmscomplaintno` = `PMS<line>_<n>`, then updated by the call in module 11 | Complaint No | Complaint No | |
+
+### 2.6 Warranty of sold serials → `amc` type Warranty (`WarrantyContract`)
+
+| # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
+|---|---|---|---|---|---|---|
+| 45 | (warranty of an invoice) | `trhsales` with serial rows | `amc` (`amctype` Warranty, `module = 'SAL'`, `modulecode = sal_order.code`) | AMC Contract | invoice view → AMC Contracts | one per invoice; `contractno` = invoice no.; customer, contact, executive, Bill To, branch from the migrated invoice; period = earliest start – latest end |
+| 46 | View Serial No. (serial, warranty start / end, months, PM visits, install date, location) | `trdsales2itemsdet` | `contractdetails` (`amount` 0, `invoiceno` / `invoicedate` = the invoice) | lines | lines | one per serial |
+| 47 | PM visit schedule | `trdsales7pmvisit` | `contractcall` `PMS` | All PMS tab ✚ | same | Open / Closed as 2.5 |
+
+✚ = opened for saksham (§4a).
+
+---
+
+## 3. Masters seeded
+
+| Master | Our table | Rows added | Source |
 |---|---|---|---|
-| Trn. No. | `vtrnprefix` + `ntrnno` | `contractno` | `MC…` |
-| Trn. Date | `dtrndate` | `contractdate` | |
-| Party | `nparty` → `contact` | `ccode` | required on form |
-| (party branch) | default `mltaddress` | `contactbranch` | |
-| Party Contact | `npartycontact` → `mltcontact` | `contactperson` | 3,996 |
-| Sales Person | `nsalesman` → `users` | `executive` | 4,023; fallback Admin |
-| Contract Type | serial `ncontrtype` (COMPREHENSIVE 1,166 · NON-COMPREHENSIVE 6,020) | `amctype` = '1' / '2' | 12 contracts mix both → type of the most serials, each line's type in its remark |
-| Start / End | serial `dstartdate` / `denddate` (same on all serials in 4,501 of 4,521) | `startdate` = earliest, `enddate` = latest | |
-| Period | serial `nmonths` (12 = 6,475 · 36 · 24 · 6 · 60 …) | `contractyears` = months ÷ 12, `contractmonths` = remainder | |
-| AMC Quotation No. | `namcquoteno` → migrated AMC quotation (branch + `QA` no.) | `module='CQ'`, `modulecode` = `inqcs.code` | 4,165 of 4,528 |
-| Previous contract (renewal) | line `ncontractis` = TRANSFER FROM CONTRACT, `npreviousno` → `trhcontr` | `oldcontractcode` = migrated `amc.code`; that old contract `renew = 1` | 3,394 of 3,627 found |
-| P.O. No / Date | `vpono` / `dpodate` | `ponum` / `podate` | 21 |
-| Payment Schedule | `npaymentschedule` → `mstpaymentschedule` + `vbegorend` | `paymentterms` (text) | 4,528 |
-| (office) | `nofficeid` | `branch` | required |
-| Remarks + Comment + Ref No/Date + item total / total incl. tax + charges (GST …) + amount received | `vremarks`, `vcomment`, `vrefno`, `drefdate`, `nitemtotal`, `ntotalamount`, `trdcontr4posttaxchgs`, `namountrecd` | `remarks` (labelled) | no tax on the standard contract |
-| — | — | `serviceengineer`, `department`, `visitwith`, `intervals`, `salcode` = NULL | eBizWiz has no service engineer on the contract |
-
-Not migrated: `ntrhcampa` (0), `nsalessource` (1), `ncheckset` (no check rows), `vtermsconditions` (0), `vletterhead` (print), approval (all approved; `amc` has no approval column).
+| AMC status | `status` (module AMC) | Open (behavior Pending, default), Closed (behavior Completed) — Cancelled is seeded by module 11 | the names / behaviors the app looks up |
+| Contract type | `amctype` | none (1 Comprehensive, 2 Non-Comprehensive, 3 Warranty exist) | — |
+| AMC invoice product | `product` | "Amc Product" (service), only when missing | the product the app itself uses for an AMC invoice (`GetSalesAmcProduct`) |
+| Sales label | `label` (category `SAL`) + `labelrelation` | "AMC Contract Bill", reused by name | one relation per bill invoice |
+| Checklist Master | `taskchecklistmaster` + `taskchecklistmasterdet` (title, days, sort) | 24 sets / 253 items — shared by all modules with a check list, seeded once, idempotent by title | `mstcheckset` + `msdcheckset` (+ `mstchecks` names, `ndaysdiff`): sets of offices 2/3/4/6 that are active or used by a migrated document |
 
 ---
 
-## 2) Lines → `contractdetails` (one per serial)
+## 4. Changes made on our side
 
-| Client | Client DB (`trdcontr2itemsdet` + `trdcontr1items`) | Our DB (`contractdetails`) |
-|---|---|---|
-| Item | `trdcontr1items.nitem` → `product` | `productcode` |
-| Serial No. | `vserialno` (7,187 / 7,187) | `srno` |
-| Rate (net) | `nrate` (master rate / discount % only in remark — no discount column) | `amount` |
-| Location | `vlocation` (5,602) | `location` |
-| First installation | `dfirstinstdate` (2,271) | `installationdate` |
-| Warranty → AMC (TRANSFER FROM WARRANTY, 845 point to a Sales Invoice) | `npreviousno` → `trhsales` | `invoiceno` = `SA…`, `invoicedate` = invoice date (standard line fields the app fills when a contract comes from a sales invoice) |
-| Period of this serial | `dstartdate`, `denddate` | `startdate`, `enddate` |
-| PM visits | `npmvisits` over `nmonths` | `intervals` = visits per year when it is one of 0/1/2/3/4/6/12, else NULL (actual visits come from §4) |
-| Contract type, months, PM visits, closed (39), master rate / discount %, sign-up/renewal/transfer | `ncontrtype`, `nmonths`, `npmvisits`, `bclosed`, `nmasterrate`, `ndiscountperc`, `ncontractis` | `remark` (labelled) |
-| — | — | `quantity` = 1, `iscomponent` = 0, `contractplan` / `dealercode` NULL |
+### 4a. Form / view changes (saksham-gated)
 
----
+| # | Screen | Change | Kind | File | DB column |
+|---|---|---|---|---|---|
+| 1 | AMC Contract view | **Billing Cycle, Invoice, All Complaints, All PMS, Expense** tabs (and their panes) opened for saksham by adding it to the existing company condition | Behaviour | `amc/contract/default.asp` (tab list + pane block) | `billingcycle`, `contractcall`, `sal_order`, `expense` |
+| 2 | AMC Contract view + line add | Line **Product Desc.** column shown for saksham — header, cell, colspans, add-line textarea / validation / save | Behaviour | `amc/contract/default.asp`, `amc/scripts/contract.js` | `contractdetails.remark` |
+| 3 | AMC Contract view | medispec "Contact Branch" row opened for saksham: Bill To (`amc.contactbranch`, place - address) | Behaviour | `amc/contract/default.asp`, `amc/scripts/contract.js` | `amc.contactbranch` |
+| 4 | AMC Contract view | that row labelled **Customer Billing Branch** for saksham (same label as the Sales Invoice form); view only — no form field for saksham | Label | `amc/contract/default.asp` | `amc.contactbranch` |
 
-## 3) Bills → `billingcycle`
+Originals are kept as comments ("- Aftab Alam"). JS and backend of the tabs have no company check; the Installation tab inside the same block stays gated.
 
-| Client DB (`trdcontr3bills`) | Our DB (`billingcycle`) |
-|---|---|
-| `ncontr` | `amccode` |
-| `nbillno` (bill number of the contract; **not** a sales invoice — amount equals the invoice with that code on only 4 of 3,640) | `billingno` = `BILL_<contract no>_<n>` (app format) + eBizWiz bill no. kept |
-| `dbilldate` | `billingdate` |
-| `nbillamount` | `amount` |
-| — | `type='BILL'`, `salcode` NULL |
+**New fields: 0** · tabs opened: 5 · line column opened: 1 · view rows opened: 1.
 
-`namountrecd` (2,389 bills) = money received → the **Payment** module (eBizWiz Receipt Entry refers to these bills via `trdpayrg1details.nbillno`).
+### 4b. Database changes (ALTER)
+
+None.
 
 ---
 
-## 4) PM visits → `contractcall` (`type='PMS'`)
+## 5. Not migrated
 
-| Client DB (`trdcontr7pmvisit`) | Our DB (`contractcall`) |
-|---|---|
-| `ncontr2` → the serial row → its `contractdetails` | `contractdtcode` |
-| `dschpmdate` (scheduled) | `date`, `complaintdate` |
-| `dactpmdate` (done, 11,502) | `status` = Closed + `closedt`; not done → Open |
-| (contract / serial) | `ccode`, `productcode`, `serialno` |
-| — | `pmscomplaintno` = `PMS<detail code>_<n>` (app format), `type='PMS'` |
-| `ncalls` (12,930 → `trhcalls`) | remark "Call: …" now; linked when Call Entry is migrated |
-
-Requires AMC statuses (D1).
-
----
-
-## 5) Decisions for your confirmation
-
-| # | Decision | Why | Needs |
+| Client UI | Client DB | Rows | Why |
 |---|---|---|---|
-| D1 | Seed `status` module 'AMC': **Open** (behavior Pending, default) and **Closed** (behavior Completed) — same names/behaviors the app code looks for (and Cona uses) | PMS/complaints can't show or close without them; empty in our DB | exe |
-| D2 | Do **not** set `amc.salcode`; warranty-transfer lines get `invoiceno`/`invoicedate` | editing a contract with `salcode` deletes that sales invoice | exe |
-| D3 | GST/charges and totals → contract `remarks` | the standard AMC contract has no tax/adjustment table; tax comes when billed | exe |
-| D4 | Bills → `billingcycle` (data kept). The Billing Cycle tab is hidden for saksham (`amc/contract/default.asp:1204` shows it only for Zinq, ZinqUat, Skytech, enliten, medispec, demo; the same `If` block also holds the Invoice tab) — add `saksham` to that condition? | to see the bill schedule on screen | exe (+ optional 1-line form change) |
-| D5 | PM visits → `contractcall` PMS with real dates/status (not regenerated) | eBizWiz schedule + done dates are real data | exe |
-| D6 | Received amounts on bills → Payment module | receipts are their own module | later |
-
-No other form change needed.
+| Campaign | `ntrhcampa` | 0 | empty |
+| Check list items | `trdcontr6checks` | 0 | empty — AMC contracts have no check items in eBizWiz; the check sets are in the Checklist Master |
+| Technical Set | `trdcontr5tech` | 0 | empty |
+| Terms & Cond. text | `vtermsconditions` | 0 | empty |
+| Threshold time / manufacturer | `nthresholdtime`, `nmanufacturer` | 0 / 7 | no field |
+| Sales Invoice for zero-amount billed bills | `trdcontr3bills` | 4 | nothing to invoice; the billing cycle row exists |
+| Received amount on bills | `trdcontr3bills` received / `namountrecd` | — | receipts are module 12 (Payment, 13), allocated to the bill invoices; the amount is also in the invoice remark |
+| Upload Doc | `trhdoc` | — | DMS is a separate round |
+| Serial lines of 8 contracts | `trdcontr2itemsdet` | 0 | these contracts have no serial in eBizWiz; header only, `amctype` / period empty |
 
 ---
 
-## Build status (2026-09-15, "go ahead")
+## 6. Verification (latest run)
 
-- **exe:** `AmcContract` class in `Program.cs`, menu **10. AMC Contract** (after AMC Quotation in Run ALL). D1 statuses `Open`/Pending (default) + `Closed`/Completed seeded under module 'AMC'; header `amc` (module 'CQ' → AMC quotation by branch + QA no.); `contractdetails` per serial (warranty-transfer lines `invoiceno`/`invoicedate` = SA no./date, `salcode` never set); `billingcycle` per bill ordered by date, `billingno` = `BILL_` + right-10 of contract no. + `_n` (app format, `contract.aspx.cs:2131`); PMS `contractcall` per PM visit, `pmscomplaintno` = `PMS` + 7-digit detail code + `_k` (app format), status Closed when done; renewals linked after all contracts are in (`oldcontractcode`, previous `renew = 1`).
-- **D4 not done as a form change:** re-reading `amc/contract/default.asp`, the Zinq/Skytech/enliten/medispec/demo `If` at line 1204 wraps **Billing Cycle, Invoice, All Complaints, All PMS and Expense** tabs, and the pane block at 1810–1988 is gated the same way. Adding saksham there opens 5 tabs, not 1 — so no form change was made; bills are in `billingcycle` (data kept) and showing the tabs is a separate decision.
-- Payment link for later: eBizWiz receipts point to contract bills (`trdpayrg1details.nbillno`); the exe orders bills by `dbilldate`, `ncode`, so the Payment module can map bill → `billingcycle` row the same way.
+Run ALL, 0 errors:
 
-## Client form re-check (Contract Entry screen, 2026-09-15)
-
-Field-by-field against the eBizWiz **Contract Entry** screen: Trn. No./Date, Party, Party Contact, Sales Person, AMC Quote No., Pymt. Schedule, B / E of Period, Campaign, Sales Source, P.O. No./Date, Terms & Cond., Check List, Ref. No./Date, Remarks, Comment, Letterhead, Trn. Total — all covered. Added after the check:
-
-| Client field | Client DB | Our DB |
+| Check | Client | Ours |
 |---|---|---|
-| Pymt. Schedule + **B / E of Period** | `npaymentschedule` (Half Yearly 1,494 · Yearly 1,412 · Advance 1,308 · Quarterly 247 · Contract Payment 53 · Once In 4 Months 13 · Monthly 1) + `vbegorend` B 2,087 / E 2,441 | `paymentterms` = "Half Yearly - Beginning of Period" (B/E shown as the form's text, not the letter) |
-| **Terms & Cond.** | `nterms` → `msttermset` ("ESCO Standard Terms and Conditions", 741) | `remarks` "Terms & Cond.: …" (`amc` has no terms column) |
-| **Check List** (template chosen) | `ncheckset` → `mstcheckset` (2,557; no check items exist, `trdcontr6checks` = 0) | `remarks` "Check List: …" |
-| Campaign / Sales Source | `ntrhcampa` 0 / `nsalessource` 1 | not migrated |
-| Letterhead | print only | not migrated |
+| Contracts | 4,528 | **4,528** `amc` (Comprehensive / Non-Comprehensive); `amc.salcode` set on 0 |
+| Quotation link | 4,165 | **4,165** `module = 'CQ'` |
+| Contact person | 3,996 set, 34 point to a blank / missing client person | **3,962** |
+| Sales person / Payment Terms / PO | 4,023 / 4,528 / 21 | same |
+| Sales Source | 1 | `Sales Source:` in **1** contract remark |
+| Renewals | 2,932 contracts with a previous contract found | `oldcontractcode` **2,935**; previous contracts `renew = 1` **3,308** |
+| Lines | 7,187 serial rows | **7,186** (1 serial row has no product line); first install **2,271**; warranty-invoice lines **1,113** = client |
+| Contract amount | Σ serial rates of each contract | equal on **4,528 of 4,528** |
+| Bills | 7,618 | **7,618** `billingcycle` = ₹22,60,67,772.51 |
+| Bill invoices | 4,000 billed bills (4 of them zero) | **3,996** Sales Invoices linked by `billingcycle.salcode`, total **₹11,70,73,427.85** = client billed bills; `Bill difference (eBizWiz)` on 14 bills of 7 contracts |
+| PM visits | 14,219 (11,502 done) | **14,219** PMS (Closed 11,502), 0 orphans |
+| Warranty contracts | 4,262 invoices with serials (1 has only an unmigrated item), 6,937 serials, 5,131 PM visits (2,029 done) | **4,261** / **6,936** / **5,131** (Closed 2,029, Cancelled 2,196 after their call, Open 908); customer / number / branch = invoice on all |
+| PMS without a call | — | **2,176** (no call in eBizWiz either; see 12) |
 
-Same three text fixes applied to the AMC Quotation module (09): B/E text in the payment-schedule remark, `nterms` 1,436 and `ncheckset` 6,845 template names in `remark`. **Code changed after the Run-ALL that is currently running started → needs the next rebuild + rerun.**
+---
 
-## Verified — Run ALL 2026-09-15 (10 modules, 0 errors) + fixes after it
+## 7. Notes
 
-- AMC Contract: 4,528 contracts, quotation link 4,165 (party same as quotation on 4,156), `salcode` 0, B/E text 4,528, Terms 741, Check List 2,557; `contractdetails` 7,186 (1 eBizWiz serial row has no product line); billing 7,618 = ₹22.61 Cr; PMS 14,219 (Closed 11,502 with `closedt`, 0 orphans, all numbers unique).
-- AMC Quotation (09): 8,758 Approved, status on all, total = eBizWiz on 8,696 of 8,714 (18: source total 0 while charges exist), check list 25,833 (`CQ`), `pdesc` S/N + period + contract / previous doc.
-- Sales Invoice labels (07): Warranty Sales 4,313 + Non Warranty Sales 1,394, exactly one label per invoice.
-- **Fixed in exe after this run (needs rerun):**
-  1. **Serial → contract by the serial's own `ncontr`** (was by its product line). 20 eBizWiz serial rows point to a product line of another contract; the header `nitemtotal` follows the serial's `ncontr` (e.g. MC1395 21,630 / MC1397 43,260 were swapped). Contract amount matched on 4,499 of 4,528 before the fix.
-  2. **Renewals:** 296 eBizWiz contracts renew several old contracts → every previous contract now gets `renew = 1`; `oldcontractcode` = first previous; each line remark carries "Previous Contract: MC…". 10 self-referencing renewals ignored.
-- Known, kept: `billingno` repeats across offices (4,786 distinct of 7,618) because MC numbers restart per office (1,587 numbers exist in two offices) and the app format uses only the contract number.
-
-_Re-verified after the fix (Run ALL 2026-09-15, 10 modules, 0 errors): contract amount = Σ serial rates of the serial's own contract on **4,528 of 4,528** (= header `nitemtotal` on 4,480; the other 48 eBizWiz headers are stale), MC1395 21,630 / MC1397 43,260 now correct; previous contracts with `renew = 1` 3,308 of 3,309; renewed contracts with `oldcontractcode` 2,929 of 2,932 (the 3 have their renewal only on a product line whose serials sit in another contract); 4,625 lines carry "Previous Contract: MC…"; PMS orphans 0; `salcode` 0._
+- **`amc.salcode` stays empty.** `deleteSalesEntry` in `contract.aspx.cs` deletes the invoice held in `amc.salcode` whenever the contract or a line is edited. Bills link to their invoices through `billingcycle.salcode` (read by the Billing Cycle tab, the contract Invoice tab, the contract outstanding and the complaint view); the warranty link uses `module = 'SAL'` / `modulecode`, which the invoice view reads.
+- **Bill invoices follow the app's own AMC billing**: a Sales Invoice with the service product "Amc Product" (qty 1), `sal_order.module` empty, linked by `billingcycle.salcode`. Receipts (module 12) are allocated to these invoices instead of sitting on account.
+- **Bill value.** Item value = the contract header item total (the serial sum only when the header has none) × bill amount ÷ contract total; the contract's charges are scaled the same way.
+- **GST by the contract total (`GstByContractTotal`).** A GST row whose amount is not in the eBizWiz contract total (total = items + other charges; 1 contract, MC360) is dropped; a contract with no GST row whose total = (items + other charges) × (1 + r%) for r = 18 / 12 / 5 / 28 gets that GST added (76 contracts, all 18%); everything else is taken as entered. What the invoice still cannot carry ends in `Bill difference (eBizWiz)` — 14 bills of 7 contracts whose own figures disagree.
+- **Check lists.** The check-set name is not written into any remark; the eBizWiz check sets are the standard Checklist Master. AMC contracts have no check items in eBizWiz.
+- **Serial → contract by the serial's own `ncontr`.** 20 client serial rows point to a product line of another contract; the header totals follow the serial's own contract.
+- **Renewals.** 296 client contracts renew several old contracts: every previous contract gets `renew = 1`, `oldcontractcode` = the first, each line remark names its own previous contract. 10 self-referencing renewals are ignored.
+- **`billingno` repeats across offices** (4,786 distinct of 7,618) because MC numbers restart per office and the app format uses only the contract number.
+- **Warranty = AMC contract type Warranty** (the EdifyBiz standard; no separate warranty module). The app's own "Convert To AMC Contract" creates lines but no PMS rows, so the exe writes the PM visits the way it writes AMC ones. Future PMS rows have no engineer in the client (`assignedto` empty); the calendar lists a PMS once it is assigned.
+- **Tabs.** The five tabs are otherwise behind a Zinq / Skytech / enliten / medispec / demo condition; saksham has them to see a contract's bills, invoices, PM visits and calls. The Product Desc. column is otherwise Zinq / Skytech only.
