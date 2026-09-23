@@ -27,14 +27,15 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 4 | Party Profile | `npartyprofile` → `mstpartyprofile.vname` | `contact.companygroup` | **Party Profile** ✚ (dropdown) | **Party Profile** (label) | name as text |
 | 5 | Sales Person | `nusersales` → `mstusers.vname` | `contact.crmagent` | **Sales Person** ✚ | **Sales Person** ✚ | user by name |
 | 6 | Service Person | `nuserservice` → `mstusers.vname` | `contact.fieldagent` | **Service Person** ✚ | **Service Person** ✚ | user by name |
-| 7 | Tax1 | `vtax1` | `contact.pan` | — | — | cap 50; full text also in Remarks |
-| 8 | Tax2 | `vtax2` | `contact.gst_no` | — | — | cap 50; full text also in Remarks |
-| 9 | Tax3 | `vtax3` | `contact.cst` | — | — | cap 50; full text also in Remarks |
+| 7 | Tax1 | `vtax1` | `contact.pan` + the parsed number in `mltaddress` (install address) | Additional Addresses > Licenses & Statutories | **Licenses & Statutories** tab | cap 50; full text also in Remarks. verified in the DB on 23/09/2026 |
+| 8 | Tax2 | `vtax2` | `contact.gst_no` + `mltaddress` | same | same | same |
+| 9 | Tax3 | `vtax3` | `contact.cst` + `mltaddress` | same | same | same |
+| 9a | (Tax 1/2/3 text parsed) | labelled free text, e.g. `GST No.: 27AAZFR4677D1ZH`, `IEC No - 0895001721`, `TIN No. 24573801401` | `mltaddress.gstno` (15-char GSTIN), `.impexpCode` (IEC), `.pan` (10-char PAN), `.vat` (TIN / VAT / CST) of the default install address | GST / Import-Export / PAN / VAT boxes | Licenses & Statutories tab (Place · GST · CIN · Aadhar · PAN) | 196 values on 139 parties; only the number is stored, the labelled text stays in the Remark; values that match no pattern stay in the Remark only. verified in the DB on 23/09/2026 |
 | 10 | Reminder Message | `vremindermessage` | `contact.custom1` + `contact.remark` | — | Remark section | also appended to Remarks as `Reminder Message: …` |
 | 11 | Remarks | `vremarks` | `contact.remark` | — | Remark section (edited on the view) | + `Tax1: … \| Tax2: … \| Tax3: … \| Reminder Message: …` appended |
 | 12 | Active | `bactive` | `contact.isdeleted` | — | — | inverted: active 1 → `isdeleted` 0 |
 | 13 | (office of the record) | `nofficeid` → `mstoffice` | `contact.companybranch` | — | — | office → `companyaddress.code` (branch) |
-| 14 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | — | `createdby`, `updatedby`, `owner` = migration user |
+| 14 | — | `addedon` / `editedon`, `addedby` / `editedby` | `createdon` / `updatedon`, `createdby` / `updatedby` (contact, mltaddress, mltcontact) | — | Created By / Updated By (contact view + persons grid) | all 20,757 parties resolve to a `mstusers` user; `owner` stays the migration user, because ownership decides who sees the contact. verified in the DB on 23/09/2026 |
 
 ### 2.2 Party Master address → `mltaddress` (install row: `isdefault = 1`, `isshipto = 1`)
 

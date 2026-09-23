@@ -66,6 +66,7 @@ EdifyBiz has no separate AMC quotation screen; the AMC contract links to a **Cus
 | # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
 |---|---|---|---|---|---|---|
 | 33 | Post Tax Charges | `trdoffer3posttaxchgs` → `mstprepostchgs` | `inq_adjust` (`adjustname`, `adjustpercent`, `adjustamount`) | Adjustments row | Adjustments | PERCENTAGE → item total (Σ serial `nrate`) × %; AMOUNT as entered; `Tax on items (eBizWiz)` / `Other items (eBizWiz)` keep Grand Total = client total — same rules as module 4 |
+| 33a | Created By / Updated By | `addedby` / `editedby` → `mstusers` | `inqcs.createdby` / `updatedby` | — | Created By / Updated By | not edited → creator; unknown user → migration user. verified in the DB on 23/09/2026 |
 
 ### 2.4 Check List → `taskchecklist` (`module = 'CQ'`)
 

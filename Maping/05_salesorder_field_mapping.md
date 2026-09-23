@@ -37,7 +37,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 14 | Check List | `ncheckset` → `mstcheckset` | — (the set is a Checklist Master, §3) | — | — | the set name is not written into any remark; the order's check items are in 2.5 |
 | 15 | Client Order No. | `vrefno` | `inqcs.ponumber` | PO Number | PO Number | cap 200 |
 | 16 | Client Order Date | `drefdate` | `inqcs.podate` | PO Date | PO Date | |
-| 17 | Prn.Order Ackn. No. | `vordacknno` | part of `inqcs.remark` | Remarks | Remarks tab | `Order Ackn No: …` |
+| 17 | Prn.Order Ackn. No. | `vordacknno` | `inqcs.sono` | Principal SO Number | Principal SO Number (SO view) | 2,724 SO (e.g. `SO-176007`); no longer in the remark. verified in the DB on 23/09/2026 |
 | 18 | Prn.Order Ackn. Date | `dackndate` | part of `inqcs.remark` | Remarks | Remarks tab | `Order Ackn Date: dd/MM/yyyy` |
 | 19 | Order Currency | `ncurrency` → `mstcurrency` | `inqcs.currency` | Currency | Currency | by short name / name |
 | 20 | (exchange rate) | `nexchangerate` | `inqcs.exchangerate` | — | — | not on the client screen, not shown for saksham |
@@ -51,7 +51,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 28 | (More → Expenses) | `trdordrc6expenses` (type, date, amount, remark) | part of `inqcs.remark` | Remarks | Remarks tab | `Expenses: POST 27/06/2017 8600.00 <remark>; …` |
 | 29 | (approval) | `bapproval` (1 on every order) | `inqcs.approvalstatus` | — | — | `''` — the value the app posts on every save (§7) |
 | 30 | (office of the record) | `nofficeid` | `inqcs.branchcode`, `comcode` | Branch Name / Company Name | Company Name / Address | office → `companyaddress.code`; company 1 |
-| 31 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | — | `createdby` / `updatedby` = migration user |
+| 31 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | Created By / Updated By | Created By / Updated By | `createdby` / `updatedby` = eBizWiz `addedby` / `editedby` user (not edited → creator; unknown user → migration user). verified in the DB on 23/09/2026 |
 
 ### 2.2 Order Received Items → `inqcsdet`
 

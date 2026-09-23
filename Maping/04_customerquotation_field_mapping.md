@@ -48,7 +48,7 @@ AMC quotations (eBizWiz *AMC Quotation*, module 9) are also `inqcs` `CQ` rows, t
 | 23 | Inquiry Category | `ninquirycategory` → `mstinquirycategory` | `inqcs.Category` | **Category** ✚ | **Category** ✚ | `miscellaneous` Inquiry / Category |
 | 24 | (approval) | `bapproval` (1 on every quotation) | `inqcs.approvalstatus` | — | — | `Approved` — the value the app's Approve action writes |
 | 25 | (office of the record) | `nofficeid` | `inqcs.branchcode`, `comcode` | Branch Name / Company Name | Company Name / Address | office → `companyaddress.code`; company 1 |
-| 26 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | — | `createdby` / `updatedby` = migration user |
+| 26 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | Created By / Updated By | Created By / Updated By | `createdby` / `updatedby` = eBizWiz `addedby` / `editedby` user (not edited → creator; unknown user → migration user). verified in the DB on 23/09/2026 |
 
 ### 2.2 Quotation Items → `inqcsdet`
 

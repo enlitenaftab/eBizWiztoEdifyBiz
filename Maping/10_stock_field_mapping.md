@@ -78,10 +78,11 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 27 | To (party) | `ntoparty` | MRO `scode` | Contractor | Contractor | |
 | 28 | To (user) | `ntouser` | part of MRO `remark` | Remarks | Remarks tab | Contractor blank; `User: <name>` |
 | 29 | To (office) | `ntooffice` | GTA `tobranchcode` (`frombranchcode` = own office) | To / From Branch Name | same | not received → `intransit = 1` |
-| 30 | Stock Out Is | `nstkoutype` | part of `remark` | Remarks | Remarks tab | MRO / GTA have no type for this |
+| 30 | Stock Out Is | `nstkoutype` | MRO: part of `remark`; GTA: not written (all 792 GTA are FRESH) | Remarks | Remarks tab | MRO / GTA have no type for this; GTA Type allows only Chargeable / Non-Chargeable |
 | 31 | Dispatch Mode / Through, Docket No. / Date, Ref. No. / Date, Remarks, Comment, charges | as 2.2 | part of `remark` | Remarks | Remarks tab | GTA "Transporter" is a contact picker, the client value is free text |
 | 32 | (paired Stock In of a GTA) | `trhstkin.nstkouno` | part of GTA `remark` | Remarks | Remarks tab | `Received by Stock-IN SI…` |
 | 33 | Items: Item, Quantity, Defective qty, Rate | `trdstkou1items.nitem`, `nquantity`, `ndefquantity`, `nrate` | `stockinoutdet` / `stockb2bdet` (`productcode`, Default Batch, `qty`, `dqty`, `price`, `unit`) | Product, Batch, Quantity, Damaged Qty, Price, Unit | same | |
+| 33a | Line links: Stock-IN `trdstkin1items.nsales1` (5 lines), Stock-OUT `trdstkou1items.nordrc1` (6 lines) | — | not migrated | — | — | the GRN / MRO "Invoice Number" reads only `pur_order`; there is no line-level sales / order link |
 | 34 | (stock ledger) | — | `stocktrans` MRO −qty / −dqty; GTA −qty at the from-branch, + at the to-branch (branch 0 in transit) | — | Stock Summary | `dqty` written negative when stock leaves (the app would add it) |
 
 ### 2.5 Movements from other modules (same ledger)

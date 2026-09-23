@@ -50,7 +50,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 22 | Order No. / Order Value | `norderno`, `nordwonvalue` | — | — | — | filled by the order, not entered |
 | 23 | Remarks | `vremarks` | part of `inqcs.remark` | Remark | Remark section | after Inquiry Details |
 | 24 | Comment | `vcomment` | part of `inqcs.remark` | Remark | Remark section | `Comment: …` |
-| 25 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | — | `createdby` / `updatedby` = migration user |
+| 25 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | Created By / Updated By | Created By / Updated By | `createdby` / `updatedby` = eBizWiz `addedby` / `editedby` user (not edited → creator; unknown user → migration user). verified in the DB on 23/09/2026 |
 
 ### 2.3 Inquiry Items → `inqcsdet`
 
@@ -71,7 +71,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 33 | — | (action text) | `followup.followType` | — | Follow Up tab | keyword rule: Meeting / Call / SMS / Fax / E-Mail / Others |
 | 34 | Action Taken Date | `dactiondate` | `followup.lastfollowup` | **Action Taken Date** ✚ | Follow Up tab | |
 | 35 | Action Taken Remarks | `vremarks` | `followup.remarks` | **Remarks** ✚ | Follow Up tab | |
-| 36 | Person Contacted | `npartycontact1` → `msdparty` | `followup.person`, `followup.pcode` | **Person Contacted** ✚ | Follow Up tab | `mltcontact.code` |
+| 36 | Person Contacted | `npartycontact1` → `msdparty` | `followup.person`, `followup.pcode` | **Person Contacted** ✚ | Follow Up tab | `mltcontact.code`. When `npartycontact1` is empty or not found, the action's Party Contact `npartycontact` (same as the app's Next Action save); ~102,000 more rows get a Person. verified in the DB on 23/09/2026 |
 | 37 | Sales Person | `nsalesman` → `mstusers` | `followup.createdby` | **Sales Person** ✚ (next action) | Follow Up tab | the follow-up's owner |
 | 38 | (inquiry) | `ninquiry` | `followup.modulecode`, `followup.ccode` | — | — | inquiry code + its customer |
 | 39 | Next Action To Be Taken / Action To Be Taken Date / Party Contact / Action To be Taken Remarks | the next `trdinqry2actions` row of the same inquiry | its own `followup` row (same rules 28-37) | **Next Action** block ✚ | Follow Up tab | eBizWiz stores the next action as a separate action row |

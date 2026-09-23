@@ -5,7 +5,6 @@ using System.Data.SqlClient;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 using static eBizWiztoEdifyBiz.Shared;
 
 // ============================================================================
@@ -101,9 +100,6 @@ namespace eBizWiztoEdifyBiz
         }
         public static bool Bool(object v) { return v != null && v != DBNull.Value && Convert.ToBoolean(v); }
         // Stable, scale-independent string key for a decimal source ncode (drops trailing zeros).
-        // eBizWiz addedby / editedby -> createdby / updatedby (migration user when the eBizWiz user is unknown; not edited -> creator). - Aftab Alam
-        public static object CreatedByUser(object addedby) { int u; return UserByCode.TryGetValue(NKey(addedby), out u) ? u : MigrationUser; }
-        public static object UpdatedByUser(object addedby, object editedby) { int u; return UserByCode.TryGetValue(NKey(editedby), out u) ? u : CreatedByUser(addedby); }
         public static string NKey(object v) { return v == null || v == DBNull.Value ? "" : Dec(v).ToString("0.############", CultureInfo.InvariantCulture); }
         // DBNull-safe parameter value.
         public static object P(object v) { return v ?? DBNull.Value; }
@@ -688,7 +684,7 @@ namespace eBizWiztoEdifyBiz
                            p.vwebsite, p.vinstaddress, p.vinstpostalcode, p.vinsttel1, p.vinsttel2, p.vinstfax, p.vinstemail,
                            p.vbilladdress, p.vbillpostalcode, p.vbilltel1, p.vbilltel2, p.vbillfax, p.vbillemail,
                            p.vtax1, p.vtax2, p.vtax3, p.vremindermessage, p.vremarks,
-                           p.addedon, p.editedon, p.addedby, p.editedby
+                           p.addedon, p.editedon
                     FROM mstparty p WITH (NOLOCK)
                     WHERE p.nofficeid IN (" + OfficeIn + @")
                     ORDER BY p.ncode";
@@ -707,7 +703,6 @@ namespace eBizWiztoEdifyBiz
                     }
                 }
 
-                Console.WriteLine("  Tax text parsed -> address: GSTIN " + _taxGst + ", PAN " + _taxPan + ", IEC " + _taxIec + ", VAT/TIN " + _taxVat);
                 WriteUnmatchedCityLog();
             }
 
@@ -747,11 +742,6 @@ namespace eBizWiztoEdifyBiz
 
             object createdon = P(dr["addedon"]);
             object updatedon = dr["editedon"] != DBNull.Value ? dr["editedon"] : P(dr["addedon"]);
-            // eBizWiz Added By / Edited By -> Created By / Updated By (contact view + persons grid). owner stays the
-            // migration user, because ownership drives who sees the contact in EdifyBiz. - Aftab Alam
-            object partyCreatedBy = CreatedByUser(dr["addedby"]), partyUpdatedBy = UpdatedByUser(dr["addedby"], dr["editedby"]);
-            string taxGst, taxPan, taxIec, taxVat;
-            ParseTax(new string[] { tax1, tax2, tax3 }, out taxGst, out taxPan, out taxIec, out taxVat);
 
             int ncity = Int(dr["ncity"]);
             int? cityCode = ResolveCity(ncity);
@@ -778,7 +768,7 @@ namespace eBizWiztoEdifyBiz
                              crmagent, fieldagent, owner, ownershipchangedby, ownershipchangedon, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
                         VALUES (@name, @ctype, @cg, @remark, @custom1, @pan, @gst_no, @cst, @isdel, @branch,
-                                @crmagent, @fieldagent, @cb, @cb, @uon, @crb, @ubr, @con, @uon)";
+                                @crmagent, @fieldagent, @cb, @cb, @uon, @cb, @cb, @con, @uon)";
                     using (SqlCommand c = new SqlCommand(insC, tgt, tx))
                     {
                         c.Parameters.AddWithValue("@name", name);
@@ -794,9 +784,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@branch", branch);
                         c.Parameters.AddWithValue("@crmagent", crmAgent);
                         c.Parameters.AddWithValue("@fieldagent", fieldAgent);
-                        c.Parameters.AddWithValue("@cb", MigrationUser);            // owner / ownershipchangedby
-                        c.Parameters.AddWithValue("@crb", partyCreatedBy);          // eBizWiz addedby - Aftab Alam
-                        c.Parameters.AddWithValue("@ubr", partyUpdatedBy);          // eBizWiz editedby - Aftab Alam
+                        c.Parameters.AddWithValue("@cb", MigrationUser);
                         c.Parameters.AddWithValue("@con", createdon);
                         c.Parameters.AddWithValue("@uon", updatedon);
                         ccode = Convert.ToInt32(c.ExecuteScalar());
@@ -817,7 +805,7 @@ namespace eBizWiztoEdifyBiz
                         defaultBranch = InsertAddress(tgt, tx, ccode, place, instAddr, area, cityCode,
                             Str(dr["vinstpostalcode"]), Str(dr["vinsttel1"]), Str(dr["vinsttel2"]),
                             Str(dr["vinstemail"]), Str(dr["vinstfax"]), Str(dr["vwebsite"]),
-                            1, 0, 1, createdon, updatedon, partyCreatedBy, taxGst, taxPan, taxIec, taxVat);
+                            1, 0, 1, createdon, updatedon);
                         addrN++;
                     }
 
@@ -826,7 +814,7 @@ namespace eBizWiztoEdifyBiz
                         int billBranch = InsertAddress(tgt, tx, ccode, place, billAddr, "", cityCode,
                             Str(dr["vbillpostalcode"]), Str(dr["vbilltel1"]), Str(dr["vbilltel2"]),
                             Str(dr["vbillemail"]), Str(dr["vbillfax"]), "",
-                            0, 1, 0, createdon, updatedon, partyCreatedBy);
+                            0, 1, 0, createdon, updatedon);
                         if (defaultBranch == 0) defaultBranch = billBranch;   // fallback if no install address
                         addrN++;
                     }
@@ -847,7 +835,7 @@ namespace eBizWiztoEdifyBiz
                             // (vtel1 usually holds a LANDLINE, so do NOT promote it into mobile). - Aftab Alam
                             InsertContactRow(tgt, tx, ccode, persName, p.Designation, p.Mobile, p.Tel1, p.Tel2,
                                 p.Email, other, p.Dob, p.Anniversary, p.SpouseDob, p.Child1Dob, p.Child2Dob,
-                                p.Communication, "", first ? 1 : 0, defaultBranch, createdon, updatedon, partyCreatedBy);
+                                p.Communication, "", first ? 1 : 0, defaultBranch, createdon, updatedon);
                             persN++;
                             first = false;
                         }
@@ -862,46 +850,17 @@ namespace eBizWiztoEdifyBiz
             }
         }
 
-        // eBizWiz Tax 1/2/3 are free text with a label ("GST No.: 27AAZFR4677D1ZH", "IEC No - 0895001721").
-        // Pull the numbers out into the address Licenses & Statutories fields the contact form / tab shows;
-        // the full text stays in the remark as before. - Aftab Alam
-        static readonly Regex _reGst = new Regex("\\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]\\b", RegexOptions.IgnoreCase);
-        static readonly Regex _rePan = new Regex("\\b[A-Z]{5}[0-9]{4}[A-Z]\\b", RegexOptions.IgnoreCase);
-        static readonly Regex _reNum = new Regex("[0-9A-Z]{6,20}", RegexOptions.IgnoreCase);
-        static int _taxGst, _taxPan, _taxIec, _taxVat;
-        static void ParseTax(string[] vals, out string gst, out string pan, out string iec, out string vat)
-        {
-            gst = ""; pan = ""; iec = ""; vat = "";
-            foreach (string v0 in vals)
-            {
-                string v = (v0 ?? "").Trim(); if (v.Length == 0) continue;
-                Match m = _reGst.Match(v);
-                if (m.Success) { if (gst.Length == 0) gst = m.Value.ToUpperInvariant(); continue; }
-                string label = v.ToUpperInvariant();
-                string tail = label.IndexOf(':') >= 0 ? label.Substring(label.IndexOf(':') + 1) : label;
-                if (label.Contains("IEC")) { Match n = _reNum.Match(tail); if (n.Success && iec.Length == 0) iec = n.Value; continue; }
-                if (label.Contains("TIN") || label.Contains("VAT") || label.Contains("CST")) { Match n = _reNum.Match(tail); if (n.Success && vat.Length == 0) vat = n.Value; continue; }
-                Match pm = _rePan.Match(v);
-                if (pm.Success && pan.Length == 0) pan = pm.Value.ToUpperInvariant();
-            }
-            if (gst.Length > 0) _taxGst++;
-            if (pan.Length > 0) _taxPan++;
-            if (iec.Length > 0) _taxIec++;
-            if (vat.Length > 0) _taxVat++;
-        }
-
         static int InsertAddress(SqlConnection tgt, SqlTransaction tx, int ccode, string place, string address, string area,
             int? cityCode, string pincode, string tel1, string tel2, string email1, string fax1, string website1,
-            int isDefault, int isBillTo, int isShipTo, object createdon, object updatedon,
-            object createdby = null, string gstno = "", string pan = "", string iec = "", string vat = "")
+            int isDefault, int isBillTo, int isShipTo, object createdon, object updatedon)
         {
             string sql = @"
                 INSERT INTO mltaddress
                     (ccode, place, address, area, citycode, pincode, telephone1, telephone2, email1, fax1, website1,
-                     isdefault, isbillto, isshipto, gstno, pan, impexpCode, vat, createdby, updatedby, createdon, updatedon)
+                     isdefault, isbillto, isshipto, createdby, updatedby, createdon, updatedon)
                 OUTPUT INSERTED.code
                 VALUES (@ccode, @place, @addr, @area, @city, @zip, @t1, @t2, @email, @fax, @web,
-                        @def, @bill, @ship, @gst, @pan, @iec, @vat, @cb, @cb, @con, @uon)";
+                        @def, @bill, @ship, @cb, @cb, @con, @uon)";
             using (SqlCommand a = new SqlCommand(sql, tgt, tx))
             {
                 a.Parameters.AddWithValue("@ccode", ccode);
@@ -918,10 +877,7 @@ namespace eBizWiztoEdifyBiz
                 a.Parameters.AddWithValue("@def", isDefault);
                 a.Parameters.AddWithValue("@bill", isBillTo);
                 a.Parameters.AddWithValue("@ship", isShipTo);
-                a.Parameters.AddWithValue("@gst", PS(Cap(gstno, 20))); a.Parameters.AddWithValue("@pan", PS(Cap(pan, 30)));
-                a.Parameters.AddWithValue("@iec", PS(Cap(iec, 30))); a.Parameters.AddWithValue("@vat", PS(Cap(vat, 30)));
-                //a.Parameters.AddWithValue("@cb", MigrationUser);
-                a.Parameters.AddWithValue("@cb", createdby ?? MigrationUser);
+                a.Parameters.AddWithValue("@cb", MigrationUser);
                 a.Parameters.AddWithValue("@con", createdon);
                 a.Parameters.AddWithValue("@uon", updatedon);
                 return Convert.ToInt32(a.ExecuteScalar());
@@ -931,8 +887,7 @@ namespace eBizWiztoEdifyBiz
         static void InsertContactRow(SqlConnection tgt, SqlTransaction tx, int ccode, string name, string designation,
             string mobile, string tel1, string tel2, string email, string other,
             DateTime? bday, DateTime? anniv, DateTime? spdob, DateTime? c1, DateTime? c2,
-            string communication, string department, int isDefault, int branch, object createdon, object updatedon,
-            object createdby = null)
+            string communication, string department, int isDefault, int branch, object createdon, object updatedon)
         {
             string sql = @"
                 INSERT INTO mltcontact
@@ -960,8 +915,7 @@ namespace eBizWiztoEdifyBiz
                 c.Parameters.AddWithValue("@c2", P(c2));
                 c.Parameters.AddWithValue("@def", isDefault);
                 c.Parameters.AddWithValue("@branch", branch > 0 ? (object)branch : DBNull.Value);
-                //c.Parameters.AddWithValue("@cb", MigrationUser);
-                c.Parameters.AddWithValue("@cb", createdby ?? MigrationUser);   // the party's eBizWiz creator - Aftab Alam
+                c.Parameters.AddWithValue("@cb", MigrationUser);
                 c.Parameters.AddWithValue("@con", createdon);
                 c.Parameters.AddWithValue("@uon", updatedon);
                 c.ExecuteNonQuery();
@@ -1395,7 +1349,6 @@ namespace eBizWiztoEdifyBiz
                 EnsureDefaultBrandModel(tgt);
                 BuildPartyContactMap(tgt);
                 EnsureBranches(tgt);
-                EnsureUserByCode();   // module 2 may run on its own; Created By needs the user map - Aftab Alam
                 LoadSuppliers();
 
                 Console.WriteLine("Masters mapped: item type labels=" + _labelByItemType.Count + "(+" + _newItemTypeLabels + " new), category=" + _mapCategory.Count + "(+" + _newProdCat +
@@ -1407,7 +1360,7 @@ namespace eBizWiztoEdifyBiz
                     SELECT ncode, vitemcode, vname, vprintdescription, nitemtype, nitemcategory, nunits, ncurrency,
                            nparty, npurchaseprice, nsellingprice, nwarrantyperiod, nnpmvisits,
                            ncontractamt1, ncontractamt2, ncontractamt3, ncontractamt4, nclass,
-                           vremarks, bactive, nofficeid, addedon, editedon, addedby, editedby
+                           vremarks, bactive, nofficeid, addedon, editedon
                     FROM mstitems WITH (NOLOCK)
                     WHERE nofficeid IN (" + OfficeIn + @")
                     ORDER BY ncode";
@@ -1485,7 +1438,7 @@ namespace eBizWiztoEdifyBiz
                         OUTPUT INSERTED.code
                         VALUES (@name, @casno, @profile, @remark, @grade, @type, @prodcat, @unit, @curr,
                                 @price, @cost, @ccode, @branch, 1, @isdel,
-                                @crb, @ubr, @con, @uon)";
+                                @cb, @cb, @con, @uon)";
                     using (SqlCommand c = new SqlCommand(insP, tgt, tx))
                     {
                         c.Parameters.AddWithValue("@name", name);
@@ -1502,10 +1455,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@ccode", ccode);
                         c.Parameters.AddWithValue("@branch", branch);
                         c.Parameters.AddWithValue("@isdel", isDeleted);
-                        //c.Parameters.AddWithValue("@cb", MigrationUser);
-                        // Created By / Updated By = eBizWiz addedby / editedby (product view + list). - Aftab Alam
-                        c.Parameters.AddWithValue("@crb", CreatedByUser(dr["addedby"]));
-                        c.Parameters.AddWithValue("@ubr", UpdatedByUser(dr["addedby"], dr["editedby"]));
+                        c.Parameters.AddWithValue("@cb", MigrationUser);
                         c.Parameters.AddWithValue("@con", createdon);
                         c.Parameters.AddWithValue("@uon", updatedon);
                         pcode = Convert.ToInt32(c.ExecuteScalar());
@@ -1923,7 +1873,7 @@ namespace eBizWiztoEdifyBiz
                     SELECT ncode, vtrnprefix, ntrnno, dtrndate, nparty, npartycontact, ninquiryby, vinquirydetails,
                            ninquirycategory, nsalesstage, ninquirystatus, nlostreasons, ntrhcampa, ninquirysource, ncheckset,
                            nsalesman, dclosingdate, vremarks, vcomment, nprobability, ninqvalue, nactionType,
-                           nofficeid, addedon, editedon, addedby, editedby
+                           nofficeid, addedon, editedon
                     FROM trhinqry WITH (NOLOCK)
                     WHERE nofficeid IN (" + OfficeIn + @")
                     ORDER BY ncode";
@@ -2003,7 +1953,7 @@ namespace eBizWiztoEdifyBiz
                              types, stage, lossreason, calltype, comcode, branchcode, remark, approvalstatus, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
                         VALUES ('CI', @inqref, @inqdate, @validdate, @cscode, @csbranch, @cperson, @exec, @status, @cat, @sources,
-                                @types, @stage, @lossreason, @calltype, @com, @branch, @remark, '', @cb, @ub, @con, @uon)";
+                                @types, @stage, @lossreason, @calltype, @com, @branch, @remark, '', @cb, @cb, @con, @uon)";
                     // approvalstatus '' = what the app itself posts on every save (inquiry.js txtapprovalstatus ""); the column
                     // default 'Pending' would otherwise list migrated rows as awaiting approval. - Aftab Alam
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
@@ -2026,10 +1976,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@com", CompanyCode);
                         c.Parameters.AddWithValue("@branch", branch);
                         c.Parameters.AddWithValue("@remark", PS(remark));
-                        //c.Parameters.AddWithValue("@cb", MigrationUser);
-                        // Created By / Updated By = eBizWiz addedby / editedby (view "Created By / Updated By"). - Aftab Alam
-                        c.Parameters.AddWithValue("@cb", CreatedByUser(dr["addedby"]));
-                        c.Parameters.AddWithValue("@ub", UpdatedByUser(dr["addedby"], dr["editedby"]));
+                        c.Parameters.AddWithValue("@cb", MigrationUser);
                         c.Parameters.AddWithValue("@con", createdon);
                         c.Parameters.AddWithValue("@uon", updatedon);
                         code = Convert.ToInt32(c.ExecuteScalar());
@@ -2435,13 +2382,11 @@ namespace eBizWiztoEdifyBiz
 
                 Console.WriteLine("-----------------------------------------------------");
                 Console.WriteLine("  Followups migrated       : " + _cFollow);
-                Console.WriteLine("  Person from Party Contact: " + _cPersonFromParty);
                 Console.WriteLine("  Skipped (inquiry not found): " + _cSkippedNoInq);
                 Console.WriteLine("  Errors                   : " + _cErrors);
                 Console.WriteLine("-----------------------------------------------------");
             }
 
-            static int _cPersonFromParty;
             static void MigrateAction(SqlConnection tgt, SqlDataReader dr)
             {
                 int inq = Int(dr["ninquiry"]);
@@ -2463,10 +2408,6 @@ namespace eBizWiztoEdifyBiz
                 object person = (partyKey.Length > 0 && Int(dr["npartycontact1"]) > 0
                                  && _srcPersonCode.TryGetValue(partyKey + "|" + Int(dr["npartycontact1"]), out pc))
                                 ? (object)pc : DBNull.Value;
-                // No Person Contacted -> the action's Party Contact (npartycontact); the app's Next Action save writes
-                // Party Contact to the same followup.person / pcode (app/inquiry.asp). - Aftab Alam
-                if (person == DBNull.Value && partyKey.Length > 0 && Int(dr["npartycontact"]) > 0
-                    && _srcPersonCode.TryGetValue(partyKey + "|" + Int(dr["npartycontact"]), out pc)) { person = pc; _cPersonFromParty++; }
 
                 int pcd; object priority = _priorityMap.TryGetValue(LookInt(_fixed, Int(dr["npriority"])), out pcd) ? (object)pcd : DBNull.Value;
 
@@ -2688,7 +2629,7 @@ namespace eBizWiztoEdifyBiz
                 string headerSql = @"
                     SELECT ncode, vtrnprefix, ntrnno, dtrndate, nparty, npartycontact, nsalesman, nquotetype, ninquiry, nquotestatus,
                            ninquirycategory, vvalidity, dfollowupdate, nlostreasons, ncurrency, nexchangerate, vrefno, drefdate,
-                           vremarks, vcomment, ncheckset, nterms, nsignatory, nofficeid, addedon, editedon, addedby, editedby
+                           vremarks, vcomment, ncheckset, nterms, nsignatory, nofficeid, addedon, editedon
                     FROM trhquote WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY ncode";
 
                 using (SqlConnection src = OpenSrc())
@@ -2748,7 +2689,6 @@ namespace eBizWiztoEdifyBiz
             m.EnqRefNo = Cap(Str(dr["vrefno"]), 200);
             m.EnqRefDate = P(dr["drefdate"]);
             m.Createdon = P(dr["addedon"]);
-            m.Createdby = CreatedByUser(dr["addedby"]); m.Updatedby = UpdatedByUser(dr["addedby"], dr["editedby"]);
             m.Updatedon = dr["editedon"] != DBNull.Value ? dr["editedon"] : P(dr["addedon"]);
             m.Remark = BuildRemark(dr);
             m.Terms = BuildTerms(dr);
@@ -2864,8 +2804,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@branch", branch);
                         c.Parameters.AddWithValue("@remark", PS(m.Remark));
                         c.Parameters.AddWithValue("@terms", PS(m.Terms));
-                        //c.Parameters.AddWithValue("@cb", MigrationUser);
-                        c.Parameters.AddWithValue("@cb", m.Createdby); c.Parameters.AddWithValue("@ub", m.Updatedby);   // eBizWiz addedby / editedby - Aftab Alam
+                        c.Parameters.AddWithValue("@cb", MigrationUser);
                         c.Parameters.AddWithValue("@con", m.Createdon);
                         c.Parameters.AddWithValue("@uon", m.Updatedon);
                         code = Convert.ToInt32(c.ExecuteScalar());
@@ -3214,7 +3153,6 @@ namespace eBizWiztoEdifyBiz
             public int SourceCode;
             public string Inqref = "";
             public object Inqdate = DBNull.Value, FollowupDate = DBNull.Value, Createdon = DBNull.Value, Updatedon = DBNull.Value;
-            public object Createdby = MigrationUser, Updatedby = MigrationUser;
             public string PartyKey = "";
             public int PersonNo, StatusCode, CategoryCode, Office;
             public object Executive = MigrationUser, InqLink = DBNull.Value, QuoteType = DBNull.Value, LossReason = DBNull.Value,
@@ -3302,7 +3240,7 @@ namespace eBizWiztoEdifyBiz
                     SELECT ncode, vtrnprefix, ntrnno, dtrndate, nfromparty, npartycontact, npartycontact2, nordrecdtype, nordsource,
                            nordrecdstatus, ninquirycategory, nterms, nquote, ninquiry, vrefno, drefdate,
                            nbillto, nshipto, nsalesman, ncurrency, nexchangerate, vremarks, vcomment, npendingreason,
-                           vordacknno, dackndate, ncheckset, nofficeid, addedon, editedon, addedby, editedby
+                           vordacknno, dackndate, ncheckset, nofficeid, addedon, editedon
                     FROM trhordrc WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY ncode";
 
                 using (SqlConnection src = OpenSrc())
@@ -3380,8 +3318,6 @@ namespace eBizWiztoEdifyBiz
             m.InqLink = inqlink;
             m.InqCode = inqcode;
             m.Createdon = P(dr["addedon"]);
-            m.Createdby = CreatedByUser(dr["addedby"]); m.Updatedby = UpdatedByUser(dr["addedby"], dr["editedby"]);
-            m.Sono = PS(Cap(Str(dr["vordacknno"]), 100));   // Prn. Order Ackn. No. -> Principal SO Number (inqcs.sono) - Aftab Alam
             m.Updatedon = dr["editedon"] != DBNull.Value ? dr["editedon"] : P(dr["addedon"]);
             m.Remark = BuildRemark(dr);
             m.Terms = BuildTerms(dr);
@@ -3394,7 +3330,7 @@ namespace eBizWiztoEdifyBiz
             string rem = Str(dr["vremarks"]); if (!string.IsNullOrWhiteSpace(rem)) parts.Add(rem);
             string cm = Str(dr["vcomment"]); if (!string.IsNullOrWhiteSpace(cm)) parts.Add("Comment: " + cm);
             string pr = LookInt(_fixed, Int(dr["npendingreason"])); if (!string.IsNullOrWhiteSpace(pr)) parts.Add("Pending Reason: " + pr);
-            //string an = Str(dr["vordacknno"]); if (!string.IsNullOrWhiteSpace(an)) parts.Add("Order Ackn No: " + an);   // -> inqcs.sono (Principal SO Number) - Aftab Alam
+            string an = Str(dr["vordacknno"]); if (!string.IsNullOrWhiteSpace(an)) parts.Add("Order Ackn No: " + an);
             if (dr["dackndate"] != DBNull.Value) parts.Add("Order Ackn Date: " + Convert.ToDateTime(dr["dackndate"]).ToString("dd/MM/yyyy"));
             // Check List set (the template name; the items go to the Task Check List) and the order expenses grid. - Aftab Alam
             //string cset = LookInt(_checkset, Int(dr["ncheckset"])); if (cset.Length > 0) parts.Add("Check List: " + cset);   // check set -> Checklist Master; items are in the Task Check List tab, not in the remark - Aftab Alam
@@ -3485,11 +3421,11 @@ namespace eBizWiztoEdifyBiz
                         INSERT INTO inqcs
                             (cors, inqref, inqdate, cscode, csbranch, cperson, executive, status, Category,
                              ordertype, sources, currency, exchangerate, ponumber, podate, shippingbranch,
-                             inqlink, inqcode, terms, customertentativedate, comcode, branchcode, remark, approvalstatus, sono, createdby, updatedby, createdon, updatedon)
+                             inqlink, inqcode, terms, customertentativedate, comcode, branchcode, remark, approvalstatus, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
                         VALUES (@cors, @inqref, @inqdate, @cscode, @csbranch, @cperson, @exec, @status, @cat,
                                 @ordertype, @sources, @currency, @exrate, @pono, @podate, @shipbranch,
-                                @inqlink, @inqcode, @terms, @custdate, @com, @branch, @remark, '', @sono, @cb, @ub, @con, @uon)";
+                                @inqlink, @inqcode, @terms, @custdate, @com, @branch, @remark, '', @cb, @cb, @con, @uon)";
                     // approvalstatus '' = what the app posts on every save; the column default is 'Pending'. The client's order
                     // screen has no approval step (bapproval = 1 on all 7,658 orders). - Aftab Alam
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
@@ -3517,9 +3453,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@com", CompanyCode);
                         c.Parameters.AddWithValue("@branch", branch);
                         c.Parameters.AddWithValue("@remark", PS(m.Remark));
-                        //c.Parameters.AddWithValue("@cb", MigrationUser);
-                        c.Parameters.AddWithValue("@cb", m.Createdby); c.Parameters.AddWithValue("@ub", m.Updatedby);   // eBizWiz addedby / editedby - Aftab Alam
-                        c.Parameters.AddWithValue("@sono", m.Sono);
+                        c.Parameters.AddWithValue("@cb", MigrationUser);
                         c.Parameters.AddWithValue("@con", m.Createdon);
                         c.Parameters.AddWithValue("@uon", m.Updatedon);
                         code = Convert.ToInt32(c.ExecuteScalar());
@@ -3901,7 +3835,6 @@ namespace eBizWiztoEdifyBiz
             public int SourceCode, Office, PersonNo, PersonNo2, StatusCode, CategoryCode;
             public string Inqref = "", PartyKey = "", OrderType = "", Sources = "", Ponumber = "", Remark = "", Terms = "";
             public object Executive = MigrationUser;
-            public object Createdby = MigrationUser, Updatedby = MigrationUser, Sono = DBNull.Value;
             public object Inqdate = DBNull.Value, Podate = DBNull.Value, Createdon = DBNull.Value, Updatedon = DBNull.Value,
                           Currency = DBNull.Value, ExchangeRate = DBNull.Value, InqLink = DBNull.Value, InqCode = DBNull.Value,
                           BuyerBranch = DBNull.Value, ShippingBranch = DBNull.Value, CustomerDeliveryDate = DBNull.Value;
@@ -5957,7 +5890,7 @@ namespace eBizWiztoEdifyBiz
                 Console.WriteLine("-----------------------------------------------------");
 
                 DataTable hdr = GetSrc(@"SELECT ncode, vtrnprefix, ntrnno, dtrndate, nparty, npartycontact, noffertype, nconversion, dfollowupdate, nsalesman,
-                                               vrefno, drefdate, vremarks, vcomment, vtermsconditions, npaymentschedule, vbegorend, nterms, ncheckset, nofficeid, addedon, editedon, addedby, editedby
+                                               vrefno, drefdate, vremarks, vcomment, vtermsconditions, npaymentschedule, vbegorend, nterms, ncheckset, nofficeid, addedon, editedon
                                         FROM trhoffer WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY ncode").Tables[0];
                 foreach (DataRow h in hdr.Rows)
                 {
@@ -6030,7 +5963,7 @@ namespace eBizWiztoEdifyBiz
                             (cors, inqref, inqdate, followupdate, cscode, csbranch, cperson, executive, status, quotetype, currency,
                              enqrefno, enqrefdate, terms, modulename, approvalstatus, comcode, branchcode, remark, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
-                        VALUES ('CQ', @ref, @dt, @fu, @cs, @csb, @cp, @ex, @st, @qt, @cur, @rno, @rdt, @terms, 'AMC Contract', 'Approved', @com, @br, @rem, @cb, @ub, @con, @uon)", tgt, tx))
+                        VALUES ('CQ', @ref, @dt, @fu, @cs, @csb, @cp, @ex, @st, @qt, @cur, @rno, @rdt, @terms, 'AMC Contract', 'Approved', @com, @br, @rem, @cb, @cb, @con, @uon)", tgt, tx))
                     {
                         c.Parameters.AddWithValue("@ref", PS((Str(h["vtrnprefix"]) + Str(h["ntrnno"])).Trim()));
                         c.Parameters.AddWithValue("@dt", P(h["dtrndate"]));
@@ -6049,8 +5982,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@com", CompanyCode);
                         c.Parameters.AddWithValue("@br", branch);
                         c.Parameters.AddWithValue("@rem", PS(string.Join(" | ", rem)));
-                        //c.Parameters.AddWithValue("@cb", MigrationUser);
-                        c.Parameters.AddWithValue("@cb", CreatedByUser(h["addedby"])); c.Parameters.AddWithValue("@ub", UpdatedByUser(h["addedby"], h["editedby"]));   // eBizWiz addedby / editedby - Aftab Alam
+                        c.Parameters.AddWithValue("@cb", MigrationUser);
                         c.Parameters.AddWithValue("@con", createdon);
                         c.Parameters.AddWithValue("@uon", updatedon);
                         code = Convert.ToInt32(c.ExecuteScalar());
@@ -6315,28 +6247,6 @@ namespace eBizWiztoEdifyBiz
     // ==================================================================
     static class AmcContract
     {
-        // eBizWiz "Contract Is" (FRESH / TRANSFER FROM CONTRACT / TRANSFER FROM WARRANTY) -> amc.contracttype,
-        // master = miscellaneous module 'AMC Contract', type 'Contract Type' (contract list + view "Contract Type"). - Aftab Alam
-        static Dictionary<string, int> _amcContractType;
-        static object AmcContractType(SqlConnection tgt, string name)
-        {
-            if (name.Length == 0) return DBNull.Value;
-            if (_amcContractType == null)
-            {
-                _amcContractType = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                using (SqlCommand c = new SqlCommand("SELECT code, name FROM miscellaneous WHERE module='AMC Contract' AND type='Contract Type'", tgt))
-                using (SqlDataReader r = c.ExecuteReader()) while (r.Read()) { string n = Str(r["name"]); if (n.Length > 0 && !_amcContractType.ContainsKey(n)) _amcContractType[n] = Int(r["code"]); }
-            }
-            int code;
-            if (!_amcContractType.TryGetValue(name, out code))
-                using (SqlCommand ins = new SqlCommand("INSERT INTO miscellaneous (module, type, name, active, makedefault, createdby, createdon, updatedby, updatedon) OUTPUT INSERTED.code VALUES ('AMC Contract', 'Contract Type', @n, 1, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
-                {
-                    ins.Parameters.AddWithValue("@n", name); ins.Parameters.AddWithValue("@cb", MigrationUser);
-                    code = Convert.ToInt32(ins.ExecuteScalar()); _amcContractType[name] = code;
-                }
-            return code;
-        }
-
         static Dictionary<int, string> _fixed, _officeName, _payschedule, _termset, _checkset, _salesSource;
         static readonly Dictionary<string, int> _custByParty = new Dictionary<string, int>();
         static readonly Dictionary<int, int> _branchByContact = new Dictionary<int, int>();
@@ -6461,26 +6371,17 @@ namespace eBizWiztoEdifyBiz
             // Sales Source (mstinquirysource; 1 contract) - no source field on the AMC contract. - Aftab Alam
             string ssrc = LookInt(_salesSource, Int(h["nsalessource"])); if (ssrc.Length > 0) rem.Add("Sales Source: " + ssrc);
 
-            string hdrIs = ""; if (items != null) foreach (object[] it in items) { hdrIs = LookInt(_fixed, (int)it[2]); if (hdrIs.Length > 0) break; }
-            object contracttype = AmcContractType(tgt, hdrIs);
-
             using (SqlTransaction tx = tgt.BeginTransaction())
             {
                 try
                 {
                     int code;
-                    //using (SqlCommand c = new SqlCommand(@"INSERT INTO amc (ccode, contractno, contractdate, startdate, enddate, amctype, executive, renew, branch, ponum, podate,
-                    //                                                        contractyears, contractmonths, remarks, contactperson, module, modulecode, paymentterms, contactbranch,
-                    //                                                        createdby, createdon, updatedby, updatedon)
-                    //                                     OUTPUT INSERTED.code
-                    //                                     VALUES (@cc, @no, @dt, @sd, @ed, @type, @ex, 0, @br, @po, @podt, @yr, @mo, @rem, @cp, @mod, @mc, @pt, @cbr, @cb, @con, @cb, @uon)", tgt, tx))
-                    using (SqlCommand c = new SqlCommand(@"INSERT INTO amc (ccode, contractno, contractdate, startdate, enddate, amctype, contracttype, executive, renew, branch, ponum, podate,
+                    using (SqlCommand c = new SqlCommand(@"INSERT INTO amc (ccode, contractno, contractdate, startdate, enddate, amctype, executive, renew, branch, ponum, podate,
                                                                             contractyears, contractmonths, remarks, contactperson, module, modulecode, paymentterms, contactbranch,
                                                                             createdby, createdon, updatedby, updatedon)
                                                          OUTPUT INSERTED.code
-                                                         VALUES (@cc, @no, @dt, @sd, @ed, @type, @ctype, @ex, 0, @br, @po, @podt, @yr, @mo, @rem, @cp, @mod, @mc, @pt, @cbr, @cb, @con, @cb, @uon)", tgt, tx))
+                                                         VALUES (@cc, @no, @dt, @sd, @ed, @type, @ex, 0, @br, @po, @podt, @yr, @mo, @rem, @cp, @mod, @mc, @pt, @cbr, @cb, @con, @cb, @uon)", tgt, tx))
                     {
-                        c.Parameters.AddWithValue("@ctype", contracttype);
                         c.Parameters.AddWithValue("@cc", ccode);
                         c.Parameters.AddWithValue("@no", PS(contractno));
                         c.Parameters.AddWithValue("@dt", P(h["dtrndate"]));

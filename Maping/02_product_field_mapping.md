@@ -41,7 +41,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 18 | Active | `bactive` | `product.isdeleted` | — | — | inverted: active 1 → `isdeleted` 0 |
 | 19 | (office of the record) | `nofficeid` → `mstoffice` | `product.companybranch` | — | — | office → `companyaddress.code` |
 | 20 | — | — | `product.baseqty` | — | — | 1 |
-| 21 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | — | `createdby` / `updatedby` = migration user |
+| 21 | — | `addedon` / `editedon`, `addedby` / `editedby` | `createdon` / `updatedon`, `createdby` / `updatedby` | — | Created By / Updated By (product view + list) | all 29,966 items resolve to a `mstusers` user. verified in the DB on 23/09/2026 |
 
 ### 2.2 Item suppliers → `contprod` (type `S`)
 

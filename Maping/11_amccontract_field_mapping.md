@@ -32,6 +32,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 9 | (contract type) | serial `ncontrtype` | `amc.amctype` | AMC Type | AMC Type | 1 Comprehensive / 2 Non-Comprehensive (type of most serials) |
 | 10 | (period) | serial `dstartdate`, `denddate`, `nmonths` | `amc.startdate`, `enddate`, `contractyears`, `contractmonths` | Start / End Date, Years / Months | same | earliest start – latest end; months ÷ 12 |
 | 11 | (renewal) | line `ncontractis` = TRANSFER FROM CONTRACT, `npreviousno` | `amc.oldcontractcode` (previous `renew = 1`) | — | Old Contract | 2,935 renewals; previous contracts `renew = 1` 3,308 |
+| 11a | Contract Is (header) | line `ncontractis` → `mstfixedselection` (FRESH / TRANSFER FROM CONTRACT / TRANSFER FROM WARRANTY; one value per contract) | `amc.contracttype` = `miscellaneous.code` (module `AMC Contract`, type `Contract Type`; exe seeds the 3 names) | Contract Type (list column + view) | Contract Type | 4,520 of 4,528 contracts filled (FRESH 361, TRANSFER FROM CONTRACT 3,161, TRANSFER FROM WARRANTY 998), verified in the DB on 23/09/2026. The value also stays in the line remark (row 30). |
 | 12 | P.O. No. / P.O. Date | `vpono`, `dpodate` | `amc.ponum`, `podate` | PO Number / PO Date | same | 21 |
 | 13 | Campaign | `ntrhcampa` | — | — | — | 0 contracts |
 | 14 | Sales Source | `nsalessource` → `mstinquirysource` | part of `amc.remarks` | Remark | Remark | `Sales Source: IN OFFICE (SAKSHAM)` (1) |

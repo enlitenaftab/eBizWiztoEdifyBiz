@@ -27,7 +27,7 @@ Everything marked **remark** goes into `contractcall.remark` as `Label: value` p
 | 2 | Trn. No. | `vtrnprefix` + `ntrnno` | `reportno` | Report No | Report No | e.g. `CL16505` |
 | 3 | Call Type | `ncalltype` → `mstfixedselection` | `type` + label | — (set by the add action) | Complaint Type (shows `type`) + Labels | §7 type rule; exact call type as a label (category `AMC`) |
 | 4 | Date | `dtrndate` | `complaintdate` | Complaint Date | "Complaint Date" in the Created/Updated block | when the call was logged |
-| 5 | Call Logged By | `addedby` → `mstusers` | remark "Call Logged By" · `createdby` = migration user | Remark | Remark | |
+| 5 | Call Logged By | `addedby` → `mstusers` | `contractcall.createdby` (+ remark "Call Logged By") | — | Created By (top right) + Remark | user map; migration user when the client user is unknown |
 
 ### 2.2 Party Details
 
@@ -91,14 +91,15 @@ Everything marked **remark** goes into `contractcall.remark` as `Label: value` p
 | 36 | Pending Reason | `npendingreason` → `mstcallpendingreasons` | remark | Remark | Remark | a solved call can carry one too, so it is not a status |
 | 37 | Fast Close + date | `bfastclose`, `dfastclosedatetime` | remark | Remark | Remark | |
 | 38 | Validation Done | `bvalidation` | remark | Remark | Remark | "Validation Done: Yes" |
-| 39 | Escalated To, Follow Up No. / By / Date | `nescalateto`, `nfollowupno`, `vfollowupby`, `dfollowupdt` | — | — | — | §5 |
+| 39 | Follow Up Date / Follow Up By | `dfollowupdt`, `vfollowupby` | `followup` (module `ACM`, `modulecode` = complaint, `nextfollowup`, remarks "Customer follow-up (eBizWiz) - Follow Up By: …") | — | **Followup** tab | one follow-up per call that has either value |
+| 39a | Escalated To, Follow Up No. | `nescalateto`, `nfollowupno` | — | — | — | 0 filled (§5) |
 | 40 | Select Letterhead To Print | `vletterhead` | — | — | — | print choice only |
 
 ### 2.8 Children
 
 | # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
 |---|---|---|---|---|---|---|
-| 41 | Visit grid | `trdcalls1visit` | `callvisits` | — | Call Visit Logs tab (Complaint / Date / Status / Assigned To / Call Amount / Remarks) | `dvisitdatetime`→`date`, `nvisitby`→`assignedto`, call's complaint type→`complaint`, visit's fault solved→Closed else Open; remark = `vVisitTrnNo` + `vvisitremark` + `vcustomerRemarks` + `vPartsReplacedDetails` + time spent + kms; call's `ccode` / `productcode` / `type` / `pmscomplaintno` copied (the app does the same) |
+| 41 | Visit grid | `trdcalls1visit` | `callvisits` | — | Call Visit Logs tab (Complaint / Date / Status / Assigned To / Call Amount / Remarks) | `dvisitdatetime`→`date`, `nvisitby`→`assignedto`, call's complaint type→`complaint`, visit's fault solved→Closed else Open; remark = `vVisitTrnNo` + `vvisitremark` + `vcustomerRemarks` + `vPartsReplacedDetails` + time spent + kms; call's `ccode` / `productcode` / `type` / `pmscomplaintno` copied (the app does the same) | Call Visit Logs **Complaint** column = the visit's own "Our Complaint" from its first fault row (else the call's).
 | 42 | Fault grid | `trdcalls2fault` → `mstcomplaint` / `mstdefect` / `mstrepair` | `callvisits.remark` of its visit | — | Call Visit Logs → Remarks | `Complaint: x \| Defect: y \| Repair: z \| remarks`; a fault with no visit goes to the call remark |
 | 43 | Parts grid | `trdcalls3parts` | `amcusedproduct` | — | Used Product tab | `nitem`→`pcode`, `nquantity`→`qty`, unit, visit engineer→`executive`, `nrate`→`quotationcost`; spare location / def. qty / claimed / remarks → `remark` |
 | 44 | Parts pending | `trdcalls10pendingparts` | `amcrequestedproduct` | — | Requested Product tab | |
