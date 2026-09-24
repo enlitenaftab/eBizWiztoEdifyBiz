@@ -75,7 +75,7 @@ Source `saksham70v1_1` (offices 2, 3, 4, 6) → target `SakshamRMtP15329`. Modul
 | eBizWiz | Why |
 |---|---|
 | Upload Doc (DMS, 284,599 file references) | skipped by the user; the files are on the client server |
-| Sales Target on Office (7) | no office target in our standard (15) |
+| Sales Target on Office (7) | no office target in our standard (14) |
 | Claim Form, Write Off, Assign Service Routes, user routes | 0 rows |
 | Physical Stock Taking (5), user stock transfer (1) | headers without lines |
 | Quotation Technical Set (3) | all values empty |

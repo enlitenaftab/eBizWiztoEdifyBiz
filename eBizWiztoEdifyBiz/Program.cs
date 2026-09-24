@@ -3233,7 +3233,7 @@ namespace eBizWiztoEdifyBiz
     {
         const string Cors = "SO";
 
-        static Dictionary<int, string> _fixed, _inqCategory, _officeName;
+        static Dictionary<int, string> _fixed, _inqCategory, _officeName, _pendReason;
         static readonly Dictionary<int, int> _mapStatus = new Dictionary<int, int>();
         static readonly Dictionary<int, int> _mapCategory = new Dictionary<int, int>();
         static readonly Dictionary<int, int> _currencyMap = new Dictionary<int, int>();
@@ -3393,7 +3393,8 @@ namespace eBizWiztoEdifyBiz
             List<string> parts = new List<string>();
             string rem = Str(dr["vremarks"]); if (!string.IsNullOrWhiteSpace(rem)) parts.Add(rem);
             string cm = Str(dr["vcomment"]); if (!string.IsNullOrWhiteSpace(cm)) parts.Add("Comment: " + cm);
-            string pr = LookInt(_fixed, Int(dr["npendingreason"])); if (!string.IsNullOrWhiteSpace(pr)) parts.Add("Pending Reason: " + pr);
+            //string pr = LookInt(_fixed, Int(dr["npendingreason"])); if (!string.IsNullOrWhiteSpace(pr)) parts.Add("Pending Reason: " + pr);
+            string pr = LookInt(_pendReason, Int(dr["npendingreason"])); if (!string.IsNullOrWhiteSpace(pr)) parts.Add("Pending Reason: " + pr);
             //string an = Str(dr["vordacknno"]); if (!string.IsNullOrWhiteSpace(an)) parts.Add("Order Ackn No: " + an);   // -> inqcs.sono (Principal SO Number) - Aftab Alam
             if (dr["dackndate"] != DBNull.Value) parts.Add("Order Ackn Date: " + Convert.ToDateTime(dr["dackndate"]).ToString("dd/MM/yyyy"));
             // Check List set (the template name; the items go to the Task Check List) and the order expenses grid. - Aftab Alam
@@ -3636,6 +3637,9 @@ namespace eBizWiztoEdifyBiz
         static void LoadSourceMasters()
         {
             _fixed = SrcLookupInt("SELECT ncode, vdisplayvalue FROM mstfixedselection WITH (NOLOCK)");
+            // Order Received Pending Reason is a mstcallpendingreasons code (same master as Purchase Order and
+            // Complaint), NOT mstfixedselection - from _fixed it came out as sales-stage words like WARM. - Aftab Alam
+            _pendReason = SrcLookupInt("SELECT ncode, vname FROM mstcallpendingreasons WITH (NOLOCK)");
             _inqCategory = SrcLookupInt("SELECT ncode, vname FROM mstinquirycategory WITH (NOLOCK)");
             _officeName = SrcLookupInt("SELECT ncode, vcompanyname FROM mstoffice WITH (NOLOCK)");
         }
@@ -3981,7 +3985,7 @@ namespace eBizWiztoEdifyBiz
                            nbillto, nshipto, vinvno, dinvdate, vrefno, drefdate, nofficeid, addedon, editedon,
                            ncheckset, nterms, dprininstdate, nprinorpayrecdperc, nprinorpayrecdamt, nprinorpaypenperc, nprinorpaypenamc,
                            dprinpaypenddate, nprininrcustcleaamt, ncustomclerecamt, ncustomclependamt, vccsremarks,
-                           nprincommreq, nprinreqcurrency, nprincommrec, nprinreccurrency
+                           nprincommreq, nprinreqcurrency, nprincommrec, nprinreccurrency, addedby, editedby
                     FROM trhordpl WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY ncode";
 
                 using (SqlConnection src = OpenSrc())
@@ -4061,9 +4065,12 @@ namespace eBizWiztoEdifyBiz
                         OUTPUT INSERTED.code
                         VALUES (@pono, @podt, @scode, @cur, @disc, @deldt, @pay, @rem, @term,
                                 @status, @soc, @cat, @pend, @buyerbranch, @shipbranch, @invno, @invdt, @oano, @oadt,
-                                @branch, @exec, @com, 'PO', @cb, @cb, @con, @uon)";
+                                @branch, @exec, @com, 'PO', @crb, @ubr, @con, @uon)";
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
                     {
+                        // Created By / Updated By = eBizWiz addedby / editedby. - Aftab Alam
+                        c.Parameters.AddWithValue("@crb", CreatedByUser(dr["addedby"]));
+                        c.Parameters.AddWithValue("@ubr", UpdatedByUser(dr["addedby"], dr["editedby"]));
                         c.Parameters.AddWithValue("@pono", PS(purorderno));
                         c.Parameters.AddWithValue("@podt", P(dr["dtrndate"]));
                         c.Parameters.AddWithValue("@scode", scode);
@@ -4525,7 +4532,7 @@ namespace eBizWiztoEdifyBiz
         static readonly Dictionary<int, string> _prodType = new Dictionary<int, string>();
         static Dictionary<int, string> _taxsetName;
         static int _taxC, _taxS, _taxI;
-        static int _cTaxRows, _cAdj, _invTaxed, _invGstDiff, _billFromParty, _invLineDisc;
+        static int _cTaxRows, _cAdj, _invTaxed, _invGstDiff, _billFromParty, _invLineDisc, _invLineMasterRate;
         static int _labelWarranty, _labelNonWarranty, _lblWarranty, _lblNonWarranty;
 
         // Sales label master (label.category = 'SAL', the list the sales Labels button reads): reuse by name, create if missing.
@@ -4605,7 +4612,7 @@ namespace eBizWiztoEdifyBiz
                     SELECT ncode, vtrnprefix, ntrnno, dtrndate, nparty, npartycontact, nsalesman, nsalestype,
                            nbillto, nshipto, vpono, dpodate, ndispatchmode, vdespatchthru, vdespdocno, ddespdocdate,
                            nquote, nordrc, vrefno, drefdate, vremarks, vcomment, nitemtotal, ntotalamount, namountrecd, bwarranty,
-                           nofficeid, addedon, editedon, nterms, ncheckset, nsalessource, bdemo
+                           nofficeid, addedon, editedon, addedby, editedby, nterms, ncheckset, nsalessource, bdemo
                     FROM trhsales WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY ncode";
 
                 using (SqlConnection src = OpenSrc())
@@ -4629,6 +4636,7 @@ namespace eBizWiztoEdifyBiz
                 Console.WriteLine("  Payment terms           : " + _cPayTermDocs + " invoices (sal_order.term) | lines with serial/warranty text: " + _cSerialDesc);
                 Console.WriteLine("  Bill To from party      : " + _billFromParty + " (source Bill To blank)");
                 Console.WriteLine("  Labels                  : Warranty Sales " + _lblWarranty + ", Non Warranty Sales " + _lblNonWarranty);
+                Console.WriteLine("  Lines: master rate + discount : " + _invLineMasterRate);
                 Console.WriteLine("  Tax: invoices taxed     : " + _invTaxed + ", sal_tax rows " + _cTaxRows + ", adjustments " + _cAdj + ", with GST difference line " + _invGstDiff + ", pre-GST discount on lines " + _invLineDisc);
                 Console.WriteLine("  Errors                  : " + _cErrors);
                 Console.WriteLine("-----------------------------------------------------");
@@ -4700,9 +4708,12 @@ namespace eBizWiztoEdifyBiz
                         VALUES (@no, @dt, @cc, @cp, @exec, @ot, @link,
                                 @pono, @podt, @dm, @cn, @cno, @ddt,
                                 @bill, @ship, @cur, @rem, @term, @branch, @com, 'SO',
-                                @cb, @cb, @con, @uon)";
+                                @crb, @ubr, @con, @uon)";
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
                     {
+                        // Created By / Updated By = eBizWiz addedby / editedby. - Aftab Alam
+                        c.Parameters.AddWithValue("@crb", CreatedByUser(dr["addedby"]));
+                        c.Parameters.AddWithValue("@ubr", UpdatedByUser(dr["addedby"], dr["editedby"]));
                         c.Parameters.AddWithValue("@no", PS(salorderno));
                         c.Parameters.AddWithValue("@dt", P(dr["dtrndate"]));
                         c.Parameters.AddWithValue("@cc", ccode);
@@ -4758,9 +4769,19 @@ namespace eBizWiztoEdifyBiz
                                 d.Parameters.AddWithValue("@prod", pcode);
                                 d.Parameters.AddWithValue("@batch", lineBatch);
                                 d.Parameters.AddWithValue("@q", p[1]);
-                                d.Parameters.AddWithValue("@pr", p[2] == 0 ? (object)DBNull.Value : p[2]);
-                                // eBizWiz nrate is already the net rate (item total = qty x nrate; ndiscount is never deducted) -> no discount. - Aftab Alam
-                                d.Parameters.AddWithValue("@disc", DBNull.Value);
+                                // eBizWiz nrate is the NET rate, and the client's own screen shows the master rate with a
+                                // Discount %. Keep both: price = master rate, discount = its amount, so qty x price - discount
+                                // = qty x nrate (same rule as the Quotation / Sales Order lines, verified on all 9,967
+                                // discounted lines). ndiscount is never deducted in eBizWiz. - Aftab Alam
+                                decimal lineMaster = p.Length > 7 ? p[7] : 0m, lineDiscPc = p.Length > 8 ? p[8] : 0m;
+                                bool useMaster = lineDiscPc > 0 && lineMaster > 0 && Math.Abs(lineMaster * (1 - lineDiscPc / 100m) - p[2]) <= 0.01m;
+                                decimal linePrice = useMaster ? lineMaster : p[2];
+                                object lineDisc = useMaster ? (object)Math.Round(p[1] * lineMaster * lineDiscPc / 100m, 2) : DBNull.Value;
+                                if (useMaster) _invLineMasterRate++;
+                                //d.Parameters.AddWithValue("@pr", p[2] == 0 ? (object)DBNull.Value : p[2]);
+                                //d.Parameters.AddWithValue("@disc", DBNull.Value);
+                                d.Parameters.AddWithValue("@pr", linePrice == 0 ? (object)DBNull.Value : linePrice);
+                                d.Parameters.AddWithValue("@disc", lineDisc);
                                 d.Parameters.AddWithValue("@cur", currency);
                                 d.Parameters.AddWithValue("@wm", wmonths);
                                 d.Parameters.AddWithValue("@idt", instdt);
@@ -5006,10 +5027,10 @@ namespace eBizWiztoEdifyBiz
         }
 
         // ALL source lines: item total (qty x nrate) + line tax include blank-item lines; only item lines become sal_order_det.
-        // decimal[] = { item, qty, rate, discount, line ncode, taxset, taxamt }
+        // decimal[] = { item, qty, rate, discount, line ncode, taxset, taxamt, master rate, discount % }
         static void LoadHeaderProducts()
         {
-            foreach (DataRow r in GetSrc("SELECT nofficeid, nsales, ncode, nitem, nquantity, nrate, ndiscount, ntaxset, ntaxamt FROM trdsales1items WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
+            foreach (DataRow r in GetSrc("SELECT nofficeid, nsales, ncode, nitem, nquantity, nrate, ndiscount, ntaxset, ntaxamt, nmasterrate, ndiscountperc FROM trdsales1items WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ")").Tables[0].Rows)
             {
                 int office = Int(r[0]);
                 int hdr = Int(r[1]); if (hdr <= 0) continue;
@@ -5020,7 +5041,7 @@ namespace eBizWiztoEdifyBiz
                 int item = Int(r[3]); if (item <= 0) continue;
                 List<decimal[]> list;
                 if (!_hdrProductsByKey.TryGetValue(key, out list)) { list = new List<decimal[]>(); _hdrProductsByKey[key] = list; }
-                list.Add(new decimal[] { item, Dec(r[4]), Dec(r[5]), Dec(r[6]), Int(r[2]), Int(r[7]), Dec(r[8]) });
+                list.Add(new decimal[] { item, Dec(r[4]), Dec(r[5]), Dec(r[6]), Int(r[2]), Int(r[7]), Dec(r[8]), Dec(r[9]), Dec(r[10]) });
             }
         }
 
@@ -5155,14 +5176,24 @@ namespace eBizWiztoEdifyBiz
                 decimal lr, rate = R > 0 ? R : (prodLineRate.TryGetValue(pc, out lr) ? lr : 0m);
                 if (rate <= 0) continue;
                 prodRate[pc] = rate;
-                decimal v = prodVal[pc];
+                // One sal_tax row per product (that is how the view joins), but the amount is the sum of the
+                // per-LINE rounded amounts, because the view adds up line by line. Otherwise an invoice with two
+                // lines of the same product shows a Grand Total a paisa away from the stored tax. - Aftab Alam
+                decimal half = 0m, full = 0m;
+                foreach (object[] d0 in dets)
+                {
+                    if ((int)d0[1] != pc) continue;
+                    decimal lv = (decimal)d0[2];
+                    half += RoundView(lv * rate / 200m);
+                    full += RoundView(lv * rate / 100m);
+                }
                 if (same)
                 {
-                    InsertTax(tgt, tx, salcode, pc, _taxC, rate / 2m, Math.Round(v * rate / 200m, 2), custState, createdon, updatedon);
-                    InsertTax(tgt, tx, salcode, pc, _taxS, rate / 2m, Math.Round(v * rate / 200m, 2), custState, createdon, updatedon);
+                    InsertTax(tgt, tx, salcode, pc, _taxC, rate / 2m, half, custState, createdon, updatedon);
+                    InsertTax(tgt, tx, salcode, pc, _taxS, rate / 2m, half, custState, createdon, updatedon);
                     rows += 2;
                 }
-                else { InsertTax(tgt, tx, salcode, pc, _taxI, rate, Math.Round(v * rate / 100m, 2), custState, createdon, updatedon); rows++; }
+                else { InsertTax(tgt, tx, salcode, pc, _taxI, rate, full, custState, createdon, updatedon); rows++; }
                 using (SqlCommand u = new SqlCommand("UPDATE sal_order_det SET gst=@g WHERE salcode=@sc AND prodcode=@p", tgt, tx))
                 { u.Parameters.AddWithValue("@g", rate); u.Parameters.AddWithValue("@sc", salcode); u.Parameters.AddWithValue("@p", pc); u.ExecuteNonQuery(); }
             }
@@ -5171,7 +5202,7 @@ namespace eBizWiztoEdifyBiz
             {
                 decimal rate; if (!prodRate.TryGetValue((int)d[1], out rate)) continue;
                 decimal v = (decimal)d[2];
-                viewTax += same ? Math.Round(v * rate / 200m, 2) * 2m : Math.Round(v * rate / 100m, 2);
+                viewTax += same ? RoundView(v * rate / 200m) * 2m : RoundView(v * rate / 100m);
             }
 
             decimal gstDiff = Math.Round(gstMain + lineTax - viewTax, 2);
@@ -5202,6 +5233,10 @@ namespace eBizWiztoEdifyBiz
             }
             return new int[] { rows, adjN, realDiff ? 1 : 0 };
         }
+
+        // The stored tax must match what the Sales Invoice view computes, or the view's Grand Total and the
+        // Outstanding (which reads the stored rows) differ by a paisa. sales.js rounds in JavaScript doubles. - Aftab Alam
+        static decimal RoundView(decimal v) { return Math.Round(v, 2, MidpointRounding.ToEven); }   // sales.js toFixed(2): an exact .005 goes down
 
         static void InsertTax(SqlConnection tgt, SqlTransaction tx, int salcode, int pcode, int taxcode, decimal pct, decimal amt, int custState, object createdon, object updatedon)
         {
@@ -5406,10 +5441,10 @@ namespace eBizWiztoEdifyBiz
                 LoadSource();
 
                 DataTable inH = GetSrc(@"SELECT ncode, vtrnprefix, ntrnno, dtrndate, nstkinfrom, nstkintype, nfromoffice, nfromparty, nfromuser, nstkouno,
-                                                vrefno, drefdate, vremarks, vcomment, ndispatchmode, vdespatchthru, vdespdocno, ddespdocdate, nofficeid, addedon, editedon
+                                                vrefno, drefdate, vremarks, vcomment, ndispatchmode, vdespatchthru, vdespdocno, ddespdocdate, nofficeid, addedon, editedon, addedby, editedby
                                          FROM trhstkin WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY dtrndate, ncode").Tables[0];
                 DataTable outH = GetSrc(@"SELECT ncode, vtrnprefix, ntrnno, dtrndate, nstkoutto, nstkoutype, ntooffice, ntoparty, ntouser, ncalls,
-                                                 vrefno, drefdate, vremarks, vcomment, ndispatchmode, vdespatchthru, vdespdocno, ddespdocdate, nofficeid, addedon, editedon
+                                                 vrefno, drefdate, vremarks, vcomment, ndispatchmode, vdespatchthru, vdespdocno, ddespdocdate, nofficeid, addedon, editedon, addedby, editedby
                                           FROM trhstkou WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY dtrndate, ncode").Tables[0];
 
                 // Office transfer pairs: Stock-IN (nstkouno) <-> Stock-OUT at the sending office. Same items (OUT qty/def = IN accept/reject) -> one GTA.
@@ -5588,7 +5623,7 @@ namespace eBizWiztoEdifyBiz
                 {
                     int code;
                     using (SqlCommand c = new SqlCommand(@"INSERT INTO stockb2b (number, date, frombranchcode, tobranchcode, remark, intransit, createdby, createdon, updatedby, updatedon)
-                                                         OUTPUT INSERTED.code VALUES (@no, @dt, @fb, @tb, @rem, @it, @cb, @dt, @cb, @dt)", tgt, tx))
+                                                         OUTPUT INSERTED.code VALUES (@no, @dt, @fb, @tb, @rem, @it, @crb, @dt, @ubr, @dt)", tgt, tx))
                     {
                         c.Parameters.AddWithValue("@no", Cap((Str(o["vtrnprefix"]) + Str(o["ntrnno"])).Trim(), 30));
                         c.Parameters.AddWithValue("@dt", date);
@@ -5596,7 +5631,8 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@tb", toBr);
                         c.Parameters.AddWithValue("@rem", PS(string.Join(" | ", rem)));
                         c.Parameters.AddWithValue("@it", transit ? 1 : 0);
-                        c.Parameters.AddWithValue("@cb", MigrationUser);
+                        c.Parameters.AddWithValue("@crb", CreatedByUser(o["addedby"]));            // eBizWiz addedby - Aftab Alam
+                        c.Parameters.AddWithValue("@ubr", UpdatedByUser(o["addedby"], o["editedby"]));
                         code = Convert.ToInt32(c.ExecuteScalar());
                     }
                     if (lines != null)
@@ -5619,7 +5655,7 @@ namespace eBizWiztoEdifyBiz
         static int InsertStockInOut(SqlConnection tgt, SqlTransaction tx, string type, DataRow h, object date, int branch, object scode, object module, object modulecode, string grntype, List<string> rem)
         {
             using (SqlCommand c = new SqlCommand(@"INSERT INTO stockinout (number, date, module, modulecode, branchcode, type, remark, scode, grntype, createdby, createdon, updatedby, updatedon)
-                                                 OUTPUT INSERTED.code VALUES (@no, @dt, @mod, @mc, @br, @type, @rem, @sc, @gt, @cb, @dt, @cb, @dt)", tgt, tx))
+                                                 OUTPUT INSERTED.code VALUES (@no, @dt, @mod, @mc, @br, @type, @rem, @sc, @gt, @crb, @dt, @ubr, @dt)", tgt, tx))
             {
                 c.Parameters.AddWithValue("@no", Cap((Str(h["vtrnprefix"]) + Str(h["ntrnno"])).Trim(), 30));
                 c.Parameters.AddWithValue("@dt", date);
@@ -5630,7 +5666,9 @@ namespace eBizWiztoEdifyBiz
                 c.Parameters.AddWithValue("@rem", PS(string.Join(" | ", rem)));
                 c.Parameters.AddWithValue("@sc", scode);
                 c.Parameters.AddWithValue("@gt", PS(Cap(grntype, 100)));
-                c.Parameters.AddWithValue("@cb", MigrationUser);
+                // Created By / Updated By = eBizWiz addedby / editedby of the Stock-IN / Stock-OUT. - Aftab Alam
+                c.Parameters.AddWithValue("@crb", CreatedByUser(h["addedby"]));
+                c.Parameters.AddWithValue("@ubr", UpdatedByUser(h["addedby"], h["editedby"]));
                 return Convert.ToInt32(c.ExecuteScalar());
             }
         }
@@ -6385,7 +6423,7 @@ namespace eBizWiztoEdifyBiz
                 Console.WriteLine("-----------------------------------------------------");
 
                 DataTable hdr = GetSrc(@"SELECT ncode, vtrnprefix, ntrnno, dtrndate, nparty, npartycontact, namcquoteno, nsalesman, vpono, dpodate, vrefno, drefdate,
-                                               vremarks, vcomment, nitemtotal, ntotalamount, namountrecd, npaymentschedule, vbegorend, nterms, ncheckset, nsalessource, nofficeid, addedon, editedon
+                                               vremarks, vcomment, nitemtotal, ntotalamount, namountrecd, npaymentschedule, vbegorend, nterms, ncheckset, nsalessource, nofficeid, addedon, editedon, addedby, editedby
                                         FROM trhcontr WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY ncode").Tables[0];
                 foreach (DataRow h in hdr.Rows)
                 {
@@ -6478,9 +6516,11 @@ namespace eBizWiztoEdifyBiz
                                                                             contractyears, contractmonths, remarks, contactperson, module, modulecode, paymentterms, contactbranch,
                                                                             createdby, createdon, updatedby, updatedon)
                                                          OUTPUT INSERTED.code
-                                                         VALUES (@cc, @no, @dt, @sd, @ed, @type, @ctype, @ex, 0, @br, @po, @podt, @yr, @mo, @rem, @cp, @mod, @mc, @pt, @cbr, @cb, @con, @cb, @uon)", tgt, tx))
+                                                         VALUES (@cc, @no, @dt, @sd, @ed, @type, @ctype, @ex, 0, @br, @po, @podt, @yr, @mo, @rem, @cp, @mod, @mc, @pt, @cbr, @crb, @con, @ubr, @uon)", tgt, tx))
                     {
                         c.Parameters.AddWithValue("@ctype", contracttype);
+                        c.Parameters.AddWithValue("@crb", CreatedByUser(h["addedby"]));            // eBizWiz addedby - Aftab Alam
+                        c.Parameters.AddWithValue("@ubr", UpdatedByUser(h["addedby"], h["editedby"]));
                         c.Parameters.AddWithValue("@cc", ccode);
                         c.Parameters.AddWithValue("@no", PS(contractno));
                         c.Parameters.AddWithValue("@dt", P(h["dtrndate"]));
@@ -7340,9 +7380,12 @@ namespace eBizWiztoEdifyBiz
                 try
                 {
                     int code;
-                    using (SqlCommand c = new SqlCommand(@"INSERT INTO sal_order (salorderno, salorderdt, ccode, contactperson, executive, cbranchcode, currency, remarks, branchcode, comcode, [type], createdby, updatedby, createdon, updatedon)
-                                                         OUTPUT INSERTED.code VALUES (@no, @dt, @cc, @cp, @ex, @bill, @cur, @rem, @br, @com, 'SO', @cb, @cb, @con, @uon)", tgt, tx))
+                    // module / modulecode = the standard link EdifyBiz uses between a Sales Invoice and its complaint
+                    // (complaint view "View Invoice" tab reads sal_order.module = 'AMC Complaint' and modulecode = the call). - Aftab Alam
+                    using (SqlCommand c = new SqlCommand(@"INSERT INTO sal_order (salorderno, salorderdt, ccode, contactperson, executive, cbranchcode, currency, remarks, branchcode, comcode, module, modulecode, [type], createdby, updatedby, createdon, updatedon)
+                                                         OUTPUT INSERTED.code VALUES (@no, @dt, @cc, @cp, @ex, @bill, @cur, @rem, @br, @com, 'AMC Complaint', @mc, 'SO', @cb, @cb, @con, @uon)", tgt, tx))
                     {
+                        c.Parameters.AddWithValue("@mc", call[0]);
                         c.Parameters.AddWithValue("@no", Cap(billno, 250));
                         c.Parameters.AddWithValue("@dt", date);
                         c.Parameters.AddWithValue("@cc", call[1]);
@@ -7482,7 +7525,7 @@ namespace eBizWiztoEdifyBiz
                                                nengineer, dallocationdatetime, dapptdatetime, npendingreason, ncancelreason, bsolved, dsolvedatetime,
                                                vsolveremarks, ntotalamount, ncheckset, bwvoid, nwarrmonth, bitemchange, vsetcondition, vinvoiceprefix,
                                                ninvoiceno, dinvoicedt, bfastclose, dfastclosedatetime, bvalidation, baccepted, dacceptdate, vcomment,
-                                               nTransferTo, addedby, addedon, editedon, dfollowupdt, vfollowupby
+                                               nTransferTo, addedby, editedby, addedon, editedon, dfollowupdt, vfollowupby
                                         FROM trhcalls WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, ncode").Tables[0];
                 foreach (DataRow h in hdr.Rows)
                 {
@@ -7618,7 +7661,7 @@ namespace eBizWiztoEdifyBiz
                                                                                          closedt, remark, contactperson, contactbranch, servicecomplaint, Observation, servicedetails,
                                                                                          createdby, createdon, updatedby, updatedon)
                                                               OUTPUT INSERTED.code
-                                                              VALUES (@dc, @dt, @cdt, @ct, @st, @ty, @as, @amt, @no, @rno, @pin, @pout, @cc, @p, @sr, @cl, @rem, @cp, @cbr, @sc, @ob, @sd, @cb, @con, @cb, @uon)", tgt, tx))
+                                                              VALUES (@dc, @dt, @cdt, @ct, @st, @ty, @as, @amt, @no, @rno, @pin, @pout, @cc, @p, @sr, @cl, @rem, @cp, @cbr, @sc, @ob, @sd, @cb, @con, @ub, @uon)", tgt, tx))
                         {
                             c.Parameters.AddWithValue("@dc", contractdtcode);
                             c.Parameters.AddWithValue("@dt", visitdt);
@@ -7645,6 +7688,7 @@ namespace eBizWiztoEdifyBiz
                             //c.Parameters.AddWithValue("@cb", MigrationUser);
                             // Call Logged By (eBizWiz addedby) = the complaint's standard Created By. - Aftab Alam
                             int lb; c.Parameters.AddWithValue("@cb", UserByCode.TryGetValue(NKey(h["addedby"]), out lb) ? lb : MigrationUser);
+                            c.Parameters.AddWithValue("@ub", UpdatedByUser(h["addedby"], h["editedby"]));   // eBizWiz editedby - Aftab Alam
                             c.Parameters.AddWithValue("@con", createdon);
                             c.Parameters.AddWithValue("@uon", updatedon);
                             code = Convert.ToInt32(c.ExecuteScalar());
@@ -8309,7 +8353,7 @@ namespace eBizWiztoEdifyBiz
                                   ", complaints=" + _callNo.Count + ", company banks=" + _bankByMst.Count);
                 Console.WriteLine("-----------------------------------------------------");
 
-                DataTable hdr = GetSrc(@"SELECT ncode, nofficeid, vtrnprefix, ntrnno, dtrndate, nparty, ndepositbank, vrefno, drefdate, vremarks, addedon, editedon
+                DataTable hdr = GetSrc(@"SELECT ncode, nofficeid, vtrnprefix, ntrnno, dtrndate, nparty, ndepositbank, vrefno, drefdate, vremarks, addedon, editedon, addedby, editedby
                                          FROM trhpayrg WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, ncode").Tables[0];
                 foreach (DataRow h in hdr.Rows)
                 {
@@ -8391,9 +8435,11 @@ namespace eBizWiztoEdifyBiz
                         using (SqlCommand c = new SqlCommand(@"INSERT INTO payments (date, mode, instno, instdate, instbank, inout, paid, bankcode, remark, ccode, module, amount,
                                                                                      bankricodate, paymentno, tallyexport, createdby, createdon, updatedby, updatedon)
                                                               OUTPUT INSERTED.code
-                                                              VALUES (@dt, @mode, @ino, @idt, @ibank, 0, 1, @bank, @rem, @cc, @mod, @amt, @dt, @no, 0, @cb, @con, @cb, @uon)", tgt, tx))
+                                                              VALUES (@dt, @mode, @ino, @idt, @ibank, 0, 1, @bank, @rem, @cc, @mod, @amt, @dt, @no, 0, @crb, @con, @ubr, @uon)", tgt, tx))
                         {
                             object[] f = g[0];
+                            c.Parameters.AddWithValue("@crb", CreatedByUser(h["addedby"]));            // eBizWiz addedby - Aftab Alam
+                            c.Parameters.AddWithValue("@ubr", UpdatedByUser(h["addedby"], h["editedby"]));
                             c.Parameters.AddWithValue("@dt", date);
                             c.Parameters.AddWithValue("@mode", PS(Mode((int)f[8])));
                             c.Parameters.AddWithValue("@ino", PS(Cap((string)f[5], 50)));

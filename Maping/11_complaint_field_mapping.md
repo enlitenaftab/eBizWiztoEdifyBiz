@@ -1,4 +1,4 @@
-# 12. Call Entry (Service Entry) → AMC Complaint — field mapping
+# 11. Call Entry (Service Entry) → AMC Complaint — field mapping
 
 ## 1. Overview
 
@@ -27,7 +27,7 @@ Everything marked **remark** goes into `contractcall.remark` as `Label: value` p
 | 2 | Trn. No. | `vtrnprefix` + `ntrnno` | `reportno` | Report No | Report No | e.g. `CL16505` |
 | 3 | Call Type | `ncalltype` → `mstfixedselection` | `type` + label | — (set by the add action) | Complaint Type (shows `type`) + Labels | §7 type rule; exact call type as a label (category `AMC`) |
 | 4 | Date | `dtrndate` | `complaintdate` | Complaint Date | "Complaint Date" in the Created/Updated block | when the call was logged |
-| 5 | Call Logged By | `addedby` → `mstusers` | `contractcall.createdby` (+ remark "Call Logged By") | — | Created By (top right) + Remark | user map; migration user when the client user is unknown |
+| 5 | Call Logged By / Edited By | `addedby` / `editedby` → `mstusers` | `contractcall.createdby` / `updatedby` (+ remark "Call Logged By") | — | Created By / Updated By (top right) + Remark | user map; migration user when the client user is unknown. Updated By added 23/09/2026, verified in the DB (34 distinct users) |
 
 ### 2.2 Party Details
 
@@ -77,7 +77,7 @@ Everything marked **remark** goes into `contractcall.remark` as `Label: value` p
 | # | Client UI | Client DB | Our DB | Our Form | Our View | Rule |
 |---|---|---|---|---|---|---|
 | 29 | Chargeable Amount | `ntotalamount` | `callamt` | Call Amount | Call Amount | |
-| 30 | Bill No. | `vinvoiceprefix` + `ninvoiceno` + `dinvoicedt` | remark + **Sales Invoice** (`sal_order`, no. = bill no., e.g. `BS510`) | Remark | Remark; Sales Invoice list (label "Service Call Bill") | "Bill No: X dt. d" in the remark. `CallBillInvoice` turns every call bill with a bill number and a non-zero amount (960 of 983) into a Sales Invoice: customer / contact / Bill To / engineer (executive) from the migrated complaint; lines = the call's parts (`trdcalls3parts`); tax + post-tax charges (`trdcalls6posttaxchgs`) by the Sales Invoice rules; total = `ntotalamount`; remark e.g. `Service Call: 26E30007 \| Trn No: CL16505`. Receipts against calls are allocated to it (13). No SAL stock row: the spare lines already left stock through the call MRO (row 46) |
+| 30 | Bill No. | `vinvoiceprefix` + `ninvoiceno` + `dinvoicedt` | remark + **Sales Invoice** (`sal_order`, no. = bill no., e.g. `BS510`) | Remark | Remark; Sales Invoice list (label "Service Call Bill") | "Bill No: X dt. d" in the remark. `CallBillInvoice` turns every call bill with a bill number and a non-zero amount (960 of 983) into a Sales Invoice: customer / contact / Bill To / engineer (executive) from the migrated complaint; lines = the call's parts (`trdcalls3parts`); tax + post-tax charges (`trdcalls6posttaxchgs`) by the Sales Invoice rules; total = `ntotalamount`; remark e.g. `Service Call: 26E30007 \| Trn No: CL16505`. Receipts against calls are allocated to it (12). No SAL stock row: the spare lines already left stock through the call MRO (row 46). **Changed 23/09/2026 (verified in the DB 24/09):** the invoice also carries the standard link back to the complaint - `sal_order.module = 'AMC Complaint'`, `modulecode` = the complaint code (this is what the complaint view's "View Invoice" tab reads; that tab is company-gated to Zinq / Skytech / Cona today) |
 | 31 | Repair Estimate No./Date, Estimate Amt, Approved By, Customer PO No./Date | `nestimateamt`, `vapprovedby`, `npono`, `dpodate`, `trhRprEst` | — | — | — | §5 (no data) |
 
 ### 2.7 Call Status & Customer Follow-Up
@@ -116,7 +116,7 @@ Everything marked **remark** goes into `contractcall.remark` as `Label: value` p
 | `complainttype` | 100 client values (102 total with the 2 demo rows) | `mstcomplaint`, matched by name |
 | `label` category `AMC` | 10: P M VISIT, Breakdown (Field) Call, INSTALLATION CALL, COURTESY CALL, OTHERS, VALIDATION CALL, DEMO CALL, INSPECTION CALL, PAID SERVICE CALL, Warranty Void | `mstfixedselection` call types + `bwvoid` |
 | Checklist Master `taskchecklistmaster` / `taskchecklistmasterdet` | 24 sets / 253 items (title, days, sort) | `mstcheckset` + `msdcheckset` (item names from `mstchecks`, days from `ndaysdiff`); sets of offices 2/3/4/6 that are active or used by a migrated document; one shared master for all modules, matched by title |
-| `label` category `SAL` | "Service Call Bill" | marks the call bill invoices in the Sales Invoice list (13) |
+| `label` category `SAL` | "Service Call Bill" | marks the call bill invoices in the Sales Invoice list (12) |
 
 ---
 
@@ -131,7 +131,9 @@ Everything marked **remark** goes into `contractcall.remark` as `Label: value` p
 | 3 | Complaint view | Customer Rating / Customer Rated On / Customer Feedback Remark block opened for saksham | Layout | `amc/complaint/default.asp` | `customerfeedback` → see 14 |
 | 4 | Complaint view | saksham fill of those three fields (the original fill is inside the Zinq/Skytech gate) | Behaviour | `amc/scripts/complaint.js` | `customerfeedback` → see 14 |
 
-**New fields: 0** — every header value uses a field saksham already has. Rows 3–4 serve the Customer Feedback module (14).
+| 5 | Complaint view | **View Invoice** tab + pane opened for saksham (the tab exists in EdifyBiz but was gated to Zinq / Skytech / Cona). Shows the call bill of that complaint; reads `action=salInvoiceList` → `sal_order.module = 'AMC Complaint'`, `modulecode` = complaint. The "Link Invoice" button is left out: the link comes from the migration | Layout | `amc/complaint/default.asp` | `sal_order` |
+
+**New fields: 0** — every header value uses a field saksham already has. Rows 3–4 serve the Customer Feedback module (13), row 5 shows the call bill.
 
 ### 4b. Database changes (ALTER)
 
@@ -149,7 +151,7 @@ None.
 | Call bills with amount 0 | `trhcalls` with `ninvoiceno`, `ntotalamount = 0` | 23 | nothing billed, no receipt on them — no Sales Invoice; the bill no stays in the remark |
 | Out-repair, stand-by, check-visits, stand-by missing | `trdcalls4outrp`, `trdcalls7standbyreplace`, `trdcalls9checksvisits`, `trdcalls9stbymissing` | 0 | empty |
 | Used-product lines of items never migrated | `trdcalls3parts` | 11 | item not in our product master |
-| Customer Feedback / Survey | `trdcalls5happy` | 41,256 | its own module → `14_customerfeedback_field_mapping.md` |
+| Customer Feedback / Survey | `trdcalls5happy` | 41,256 | its own module → `13_customerfeedback_field_mapping.md` |
 | Calls of offices 1 and 5 | `trhcalls` | 280 | WinMax test offices |
 
 ---

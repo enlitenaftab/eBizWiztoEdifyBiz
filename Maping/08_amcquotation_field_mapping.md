@@ -1,4 +1,4 @@
-# 09. AMC Quotation Entry → Customer Quotation (AMC)
+# 08. AMC Quotation Entry → Customer Quotation (AMC)
 
 Format: see `00_MAPPING_FORMAT.md`.
 

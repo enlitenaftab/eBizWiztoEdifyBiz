@@ -1,4 +1,4 @@
-# 15. Sales Target · Campaign · Expenses · Task — field mapping
+# 14. Sales Target · Campaign · Expenses · Task — field mapping
 
 ## 1. Overview
 
@@ -127,7 +127,7 @@ None.
 | Inquiry > Cold Call / Tour Plan | — | — | no table of its own; it creates Inquiry Entry rows (migrated in 03) |
 | Assign Service Routes | `msduserroute`, call routes | 0 | no data (party routes → contact Area, 01) |
 | Write Off Missing Quantity | write-off rows | 0 | no data |
-| Physical Stock Taking / user stock transfer | headers | 5 / 1, 0 lines | nothing to post (10) |
+| Physical Stock Taking / user stock transfer | headers | 5 / 1, 0 lines | nothing to post (09) |
 | Quotation Technical Set | `trdquote4tech` | 3 | every value column empty |
 | Reschedule PM Visits, Contract Sign-Up / Renewal Advice, Schedule Bills Generate / Print, Range Prints, Call Sheets, Owner / Action Re-Allocation, Call Allocation, Search Serial Number, Global Pending Calls | — | — | action / print / report screens with no data of their own; they act on migrated documents |
 

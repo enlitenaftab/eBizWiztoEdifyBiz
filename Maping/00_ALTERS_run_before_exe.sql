@@ -51,3 +51,26 @@ ALTER TABLE sal_order_det ALTER COLUMN installedremarks nvarchar(1000) NULL;
 ALTER TABLE sal_adjust ALTER COLUMN adjustname varchar(100) NULL;
 
 GO
+-- 9. INDEXES ON THE AMC TABLES (same convention as the EdifyBiz tables that already have them,
+--    e.g. INDXC_calendar_code). contractcall / contractdetails / callvisits / amcusedproduct /
+--    taskchecklist carry the biggest migrated volumes and had no index at all, so the Complaint
+--    list search timed out. - Aftab Alam
+CREATE CLUSTERED INDEX INDXC_contractcall_code ON contractcall (code);
+CREATE NONCLUSTERED INDEX INDXC_contractcall_contractdtcode ON contractcall (contractdtcode);
+CREATE NONCLUSTERED INDEX INDXC_contractcall_ccode ON contractcall (ccode);
+CREATE NONCLUSTERED INDEX INDXC_contractcall_date ON contractcall (date);
+CREATE NONCLUSTERED INDEX INDXC_contractcall_pmscomplaintno ON contractcall (pmscomplaintno);
+
+CREATE CLUSTERED INDEX INDXC_contractdetails_code ON contractdetails (code);
+CREATE NONCLUSTERED INDEX INDXC_contractdetails_contractcode ON contractdetails (contractcode, productcode);
+
+CREATE CLUSTERED INDEX INDXC_callvisits_code ON callvisits (code);
+CREATE NONCLUSTERED INDEX INDXC_callvisits_contractcallcode ON callvisits (contractcallcode);
+
+CREATE CLUSTERED INDEX INDXC_amcusedproduct_code ON amcusedproduct (code);
+CREATE NONCLUSTERED INDEX INDXC_amcusedproduct_complaintcode ON amcusedproduct (complaintcode);
+
+CREATE CLUSTERED INDEX INDXC_taskchecklist_code ON taskchecklist (code);
+CREATE NONCLUSTERED INDEX INDXC_taskchecklist_module ON taskchecklist (module, modulecode);
+
+GO

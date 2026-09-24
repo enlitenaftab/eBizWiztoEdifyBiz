@@ -7,7 +7,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | | Client (eBizWiz) | Ours (EdifyBiz) |
 |---|---|---|
 | Screen / menu | **Order Received** — header, *Order Received Items*, *Post Tax Charges*, *Payment Terms*, *Terms & Cond.*, *Check List*, *Upload Doc*, *Expenses* (the **More** menu) | **Inquiry** module, document type `SO` (Sales Order) — form (*Sales Order Details* section), view, Product Details (lines + Adjustments + Term Details), Task Check List tab |
-| Tables | `trhordrc` (header), `trdordrc1items` (items), `trdordrc2despdate` (delivery date per line), `trdordrc3payterms` (payment terms), `trdordrc4posttaxchgs` (charges), `trdordrc5checks` (check list), `trdordrc6expenses` (expenses); masters `mstfixedselection` (Order From / Order Is / Order Source / Order Status / Pending Reason / expense type), `mstinquirycategory`, `mstcurrency`, `mstpaymentterms`, `mstcheckset` + `msdcheckset`, `mstchecks`, `mstprepostchgs`, `msttaxset` | `inqcs` (`cors = 'SO'`), `inqcsdet`, `inq_adjust`, `taskchecklist` (`module = 'SO'`); masters `status` (Sales Order), `miscellaneous` (Inquiry / Order Type, Category), `currency`, Checklist Master (`taskchecklistmaster` / `taskchecklistmasterdet`) |
+| Tables | `trhordrc` (header), `trdordrc1items` (items), `trdordrc2despdate` (delivery date per line), `trdordrc3payterms` (payment terms), `trdordrc4posttaxchgs` (charges), `trdordrc5checks` (check list), `trdordrc6expenses` (expenses); masters `mstfixedselection` (Order From / Order Is / Order Source / Order Status / expense type), `mstcallpendingreasons` (Pending Reason), `mstinquirycategory`, `mstcurrency`, `mstpaymentterms`, `mstcheckset` + `msdcheckset`, `mstchecks`, `mstprepostchgs`, `msttaxset` | `inqcs` (`cors = 'SO'`), `inqcsdet`, `inq_adjust`, `taskchecklist` (`module = 'SO'`); masters `status` (Sales Order), `miscellaneous` (Inquiry / Order Type, Category), `currency`, Checklist Master (`taskchecklistmaster` / `taskchecklistmasterdet`) |
 | Code | — | form + view `inquiry/default.asp`, JS `assets/scripts/inquiry.js`, backend `app/inquiry.asp` (Order Type by field name; Source + Category through the saksham SO block), check list `assets/scripts/taskchecklistfill.js` |
 | Exe | — | module **5. Sales Order** — class `SalesOrder` in `Program.cs` (after module 4, so the linked quotation exists) |
 | Scope | offices 2, 3, 4, 6 (1 and 5 are WinMax test offices) — 7,658 orders | |
@@ -31,7 +31,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 8 | Order Is | `nordrecdtype` → `mstfixedselection` | `inqcs.ordertype` | **Order Type** ✚ | **Order Type** ✚ | name as text; full client group seeded |
 | 9 | Order Source | `nordsource` → `mstfixedselection` | `inqcs.sources` | **Source** ✚ | **Source** ✚ | name as text |
 | 10 | Sales Person | `nsalesman` → `mstusers` | `inqcs.executive` | Executive | Executive Name | user by name; Admin when not found |
-| 11 | Pending Reason | `npendingreason` → `mstfixedselection` | part of `inqcs.remark` | Remarks | Remarks tab | `Pending Reason: …` (2,890 orders; 111 of the 3,001 client codes have no value in `mstfixedselection`) |
+| 11 | Pending Reason | `npendingreason` → `mstcallpendingreasons` ("OPD - …", same master as the PO and the Complaint) | part of `inqcs.remark` | Remarks | Remarks tab | `Pending Reason: …` on all 3,001 orders. **Fixed 23/09/2026 (verified in the DB):** it was read from `mstfixedselection` before, which gave unrelated words (WARM, YES, OPEN) on 2,890 orders. |
 | 12 | Inquiry Category | `ninquirycategory` → `mstinquirycategory` | `inqcs.Category` | **Category** ✚ | **Category** ✚ | `miscellaneous` Inquiry / Category |
 | 13 | Terms & Cond. | `nterms` / `vtermsconditions` | — | — | — | empty on every order (0 of 7,658) |
 | 14 | Check List | `ncheckset` → `mstcheckset` | — (the set is a Checklist Master, §3) | — | — | the set name is not written into any remark; the order's check items are in 2.5 |
@@ -106,7 +106,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | Inquiry Category | `miscellaneous` (Inquiry / Category) | 0 (795 mapped, seeded by module 3) | `mstinquirycategory` |
 | Check List sets | Checklist Master: `taskchecklistmaster` (title) / `taskchecklistmasterdet` (title, days, sort) | 24 sets / 253 items, shared by all modules (seeded once, by title) | `mstcheckset` + `msdcheckset` + `mstchecks` — sets of offices 2/3/4/6 that are active or used by a migrated document |
 
-Order Source, Pending Reason, Payment Terms and expense types are written as text, so no master is seeded for them.
+Order Source, Pending Reason, Payment Terms and expense types are written as text, so no master is seeded for them. Pending Reason comes from `mstcallpendingreasons`; joining `mstfixedselection` on the same code gives unrelated values (YES, OPEN, WARM) - see 06 §Notes.
 
 ---
 

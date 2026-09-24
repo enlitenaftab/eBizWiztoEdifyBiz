@@ -53,7 +53,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 29 | Select Letterhead to print | `vletterhead` | — | — | — | print option |
 | 30 | (office of the record) | `nofficeid` | `pur_order.branchcode`, `comcode` | Branch Name / Company Name | Branch / Company Name | office → `companyaddress.code`; company 1 |
 | 31 | — | — | `pur_order.executive` | Executive | Executive Name | Admin (the client PO has no sales person) |
-| 32 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | — | `createdby` / `updatedby` = migration user |
+| 32 | — | `addedon` / `editedon`, `addedby` / `editedby` | `createdon` / `updatedon`, `createdby` / `updatedby`  — | Created By / Updated By | `createdby` / `updatedby` = the eBizWiz `addedby` / `editedby` user (not edited → creator; unknown user → migration user). verified in the DB on 23/09/2026 |
 
 ### 2.2 Order Placed Items → `pur_order_det`
 

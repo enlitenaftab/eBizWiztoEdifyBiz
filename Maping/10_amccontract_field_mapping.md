@@ -1,4 +1,4 @@
-# 11. Contract Sales → AMC Contract (+ bill invoices, + warranty of sold serials)
+# 10. Contract Sales → AMC Contract (+ bill invoices, + warranty of sold serials)
 
 Format: see `00_MAPPING_FORMAT.md`.
 
@@ -78,7 +78,7 @@ The app bills a contract billing cycle with a Sales Invoice linked by `billingcy
 | 37 | (bill line) | `nbillamount` × contract item total ÷ contract total | `sal_order_det` (product **"Amc Product"**, qty 1, `price` = scaled item value, `prod_desc`) | Product Name, Quantity, Price (Per Unit), Product Description | Particulars, Quantity/Unit, Price/Unit | description `AMC Contract MC… (period), Bill n of m` |
 | 38 | (bill GST / charges) | `trdcontr4posttaxchgs` | `sal_order_det.gst` + `sal_tax`, `sal_adjust` | GST (%), Adjustments row | CGST / SGST / IGST columns, Total GST, Adjustments | contract charges scaled to the bill share (PERCENTAGE stays a %, AMOUNT is scaled); GST by the contract total (`GstByContractTotal`, §7) |
 | 39 | Bill Amount | `nbillamount` | invoice total (lines + `sal_tax` + `sal_adjust`) | — | Grand Total | = eBizWiz bill amount; any rest → one adjustment `Bill rounding (eBizWiz)` (≤ ₹1) or `Bill difference (eBizWiz)` |
-| 40 | (bill reference), Amount Received | `namountrecd` | `sal_order.remarks` | Remarks | Remarks | `AMC Contract: MC… \| Bill n of m (eBizWiz AMC bill) \| eBizWiz Bill Amount: … \| Amount Received: …`; receipts are allocated to these invoices (13) |
+| 40 | (bill reference), Amount Received | `namountrecd` | `sal_order.remarks` | Remarks | Remarks | `AMC Contract: MC… \| Bill n of m (eBizWiz AMC bill) \| eBizWiz Bill Amount: … \| Amount Received: …`; receipts are allocated to these invoices (12) |
 | 41 | — | — | `labelrelation` (label category `SAL`) | Labels | Labels | **AMC Contract Bill** |
 
 ### 2.5 PM visits → `contractcall` (`type = 'PMS'`)
@@ -168,12 +168,13 @@ Run ALL, 0 errors:
 | Bill invoices | 4,000 billed bills (4 of them zero) | **3,996** Sales Invoices linked by `billingcycle.salcode`, total **₹11,70,73,427.85** = client billed bills; `Bill difference (eBizWiz)` on 14 bills of 7 contracts |
 | PM visits | 14,219 (11,502 done) | **14,219** PMS (Closed 11,502), 0 orphans |
 | Warranty contracts | 4,262 invoices with serials (1 has only an unmigrated item), 6,937 serials, 5,131 PM visits (2,029 done) | **4,261** / **6,936** / **5,131** (Closed 2,029, Cancelled 2,196 after their call, Open 908); customer / number / branch = invoice on all |
-| PMS without a call | — | **2,176** (no call in eBizWiz either; see 12) |
+| PMS without a call | — | **2,176** (no call in eBizWiz either; see 11) |
 
 ---
 
 ## 7. Notes
 
+- **Created By / Updated By** on the migrated document = the eBizWiz `addedby` / `editedby` user (migration user only when the eBizWiz user is unknown, and on rows the migration generates itself, such as AMC bill invoices, service-call invoices and the spare-part MRO). Verified in the DB on 23/09/2026.
 - **`amc.salcode` stays empty.** `deleteSalesEntry` in `contract.aspx.cs` deletes the invoice held in `amc.salcode` whenever the contract or a line is edited. Bills link to their invoices through `billingcycle.salcode` (read by the Billing Cycle tab, the contract Invoice tab, the contract outstanding and the complaint view); the warranty link uses `module = 'SAL'` / `modulecode`, which the invoice view reads.
 - **Bill invoices follow the app's own AMC billing**: a Sales Invoice with the service product "Amc Product" (qty 1), `sal_order.module` empty, linked by `billingcycle.salcode`. Receipts (module 12) are allocated to these invoices instead of sitting on account.
 - **Bill value.** Item value = the contract header item total (the serial sum only when the header has none) × bill amount ÷ contract total; the contract's charges are scaled the same way.

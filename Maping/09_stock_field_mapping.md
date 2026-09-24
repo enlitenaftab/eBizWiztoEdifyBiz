@@ -1,4 +1,4 @@
-# 10. Stock In / Stock Out → GRN / MRO / GTA
+# 09. Stock In / Stock Out → GRN / MRO / GTA
 
 Format: see `00_MAPPING_FORMAT.md`.
 
@@ -148,6 +148,7 @@ Run ALL, 0 errors:
 
 ## 7. Notes
 
+- **Created By / Updated By** on the migrated document = the eBizWiz `addedby` / `editedby` user (migration user only when the eBizWiz user is unknown, and on rows the migration generates itself, such as AMC bill invoices, service-call invoices and the spare-part MRO). Verified in the DB on 23/09/2026.
 - **Visibility.** GRN / MRO / GTA lists and views show only documents whose branch is in the user's `users.companybranch`. Module 1 fills it from the client's user–office access (`msduseroffice`) and gives Admin (the migration user) all four branches, so every user sees his offices.
 - **Why so much goes to Remarks.** The GRN has number, date, supplier, branch, PO link, vehicle no., type and project; the MRO has number, date, contractor, invoice link, branch and project; the GTA has from / to branch, in transit, contractor, type, transporter (contact), vehicle, e-way bill and project. The client's dispatch mode / through, docket no / date, reference no / date, user, charges, payment terms, missing qty and serial numbers have no field there, and the forms are not changed.
 - **MRO without Contractor** (657: issues to users and call spares): the MRO form requires a Contractor when the header is edited.

@@ -1,0 +1,9 @@
+# build output
+eBizWiztoEdifyBiz/bin/
+eBizWiztoEdifyBiz/obj/
+
+# local backups / scratch
+*.bak
+*.bak_*
+*.bak-*
+~$*

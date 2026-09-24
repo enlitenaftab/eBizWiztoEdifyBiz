@@ -25,7 +25,7 @@ Latest migration run: 17 steps, **0 errors**. Every client menu item below was c
 
 **Open points before go-live**
 1. **Users:** all migrated users have the Admin role and one temporary password. The client administrator must set each user's rights and every user must set a password.
-2. **Branch GSTIN:** all four branches bill on the Maharashtra GSTIN (branch city Mumbai). If Bangalore, Delhi or Kolkata have their own GSTIN, only the branch city in Company > Address has to change.
+2. **Branch GSTIN (answered by the client, 24/09/2026):** Saksham has its own GSTIN per branch - Mumbai 27AAFCS0756B1ZM, Delhi 07AAFCS0756B1ZO, Bangalore 29AAFCS0756B1ZI (Kolkata not given yet). The migrated documents keep the eBizWiz behaviour, where every office billed on the Maharashtra GSTIN (a Bangalore office invoice charged IGST to a Karnataka customer), so the migration is left as it is. Setting the branch GSTIN, the current branch addresses and the bank accounts belongs to the go-live setup of the new system, not to the migration of the old data.
 3. **Purchase Order charges** are kept as text in the PO Remarks and are not part of the EdifyBiz PO total.
 4. **Target remarks** (target number, principal split) are stored but the Target screen has no Remark field.
 5. **Documents (Upload Doc / DMS)** of every screen are not part of this migration; the files stay on the client server.

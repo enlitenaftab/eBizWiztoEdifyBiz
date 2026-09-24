@@ -50,7 +50,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 27 | Select Letterhead to print | `vletterhead` | — | — | — | print option |
 | 28 | (office of the record) | `nofficeid` | `sal_order.branchcode`, `comcode` | Branch Name / Company Name | Company Branch | office → `companyaddress.code`; company 1 |
 | 29 | — | — | `sal_order.currency` | Currency | Currency | INR (the client invoice has no currency) |
-| 30 | — | `addedon` / `editedon` | `createdon` / `updatedon` | — | — | `createdby` / `updatedby` = migration user |
+| 30 | — | `addedon` / `editedon`, `addedby` / `editedby` | `createdon` / `updatedon`, `createdby` / `updatedby`  — | Created By / Updated By | `createdby` / `updatedby` = the eBizWiz `addedby` / `editedby` user (not edited → creator; unknown user → migration user). verified in the DB on 23/09/2026 |
 
 ### 2.2 Sales Items → `sal_order_det`
 
@@ -58,7 +58,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 |---|---|---|---|---|---|---|
 | 31 | Item / Item Code | `trdsales1items.nitem` → `mstitems` | `sal_order_det.prodcode` | Product Name | Particulars | product by Item Code (module 2, `product.casno`); `prodbatchcode` = the product's Default Batch |
 | 32 | Quantity | `nquantity` | `sal_order_det.qty` | Quantity | Quantity/Unit | |
-| 33 | Master Rate / Discount % / Discount Amt. / Warr. Sale Rate (WS Rate) | `nmasterrate`, `ndiscountperc`, `ndiscount`, `nrate` | `sal_order_det.price` = `nrate` | Price (Per Unit) | Price/Unit | `nrate` is already net (item total = qty × `nrate`); `discount` only holds a pre-GST invoice discount spread by the exe (2.4) |
+| 33 | Master Rate / Discount % / Discount Amt. / Warr. Sale Rate (WS Rate) | `nmasterrate`, `ndiscountperc`, `ndiscount`, `nrate` | line with a discount %: `sal_order_det.price` = `nmasterrate`, `discount` = qty × master × % (net = qty × `nrate`); otherwise `price` = `nrate` | Price (Per Unit), Discount | Price/Unit, Discount | **Changed 23/09/2026 (verified in the DB 24/09):** the client screen shows Rate + Discount %, so the master rate and its discount amount are kept (verified: on all 9,967 discounted lines master × (1 − %) = `nrate`, so the taxable value and GST do not change). `ndiscount` is never deducted in eBizWiz; a pre-GST invoice discount is still spread by the exe (2.4) |
 | 34 | Tax Set | `ntaxset` → `msttaxset` | `sal_order_det.gst` | GST (%) | CGST / SGST / IGST rate | invoice GST % (2.4); else Tax Set % (29 lines) |
 | 35 | Technical Set | `ntechnicalset` | — | — | — | 0 lines |
 | 36 | Main Item / Auto Generat Dummy Serial No. | `bmainitem`, `bautoserial` | — | — | — | 5,353 / 2,634 lines; entry helpers for bundles and dummy serials, no field on our line |
@@ -80,6 +80,7 @@ Format: see `00_MAPPING_FORMAT.md`.
 | 42 | Post Tax Charges — GST lines ("Add : IGST @18%", CGST + SGST, GST x %) | `trdsales4posttaxchgs` → `mstprepostchgs` | `sal_order_det.gst` + `sal_tax` (per product: CGST/SGST or IGST, `taxpercent`, `taxamount`) | GST (%) | CGST / SGST / IGST columns, Total GST | main GST charge → % on every line; CGST+SGST vs IGST follows the view's state rule (branch state 27 = Bill To state) |
 | 43 | Post Tax Charges — other charges (freight, packing, insurance, discount, round off, "TOTAL …" rows with an amount) | same | `sal_adjust` (`adjustname`, `adjustpercent`, `adjustamount`) | Adjustments row | Adjustments | PERCENTAGE → item total × %; AMOUNT as entered; zero skipped |
 | 44 | GST the lines can't carry | — | `sal_adjust` | Adjustments row | Adjustments | `GST on charges (eBizWiz)` / `GST rounding (eBizWiz)` / `GST difference (eBizWiz)` |
+| 44a | (GST rounding) | — | `sal_tax.taxamount` | — | CGST / SGST / IGST Amt | **Changed 23/09/2026 (verified in the DB 24/09):** the stored tax is rounded exactly as the Sales Invoice view rounds it (the view works in JavaScript doubles), so the view Grand Total and the Outstanding agree. The stored tax is also the sum of the per-line rounded amounts, because the view adds up line by line. After the 24/09 run an exact .005 midpoint matches the view (SA2447 stores 4,592.20 per tax row), and 244 of 6,512 invoices still differ by 1-2 paise where JavaScript and .NET land on opposite sides of a midpoint - the eBizWiz total itself is always kept through the GST rounding / difference adjustment. Any remaining gap to the eBizWiz total stays in the `GST rounding (eBizWiz)` adjustment |
 | 45 | Pre-GST discount (GST charged on items − an earlier AMOUNT discount) | — | `sal_order_det.discount` | Discount | Discount | spread over the lines by value |
 | 46 | Blank-item / unmapped lines | `trdsales1items` without a migrated item | `sal_adjust` | Adjustments row | Adjustments | `Other items (eBizWiz)` |
 

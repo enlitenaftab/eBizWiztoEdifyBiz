@@ -1,4 +1,4 @@
-# 13. Receipt Entry → Payment — field mapping
+# 12. Receipt Entry → Payment — field mapping
 
 ## 1. Overview
 
@@ -126,6 +126,7 @@ None.
 
 ## 7. Notes
 
+- **Created By / Updated By** on the migrated document = the eBizWiz `addedby` / `editedby` user (migration user only when the eBizWiz user is unknown, and on rows the migration generates itself, such as AMC bill invoices, service-call invoices and the spare-part MRO). Verified in the DB on 23/09/2026.
 **Every receipt is allocated to an invoice.** In our app an on-account `paymentdetails` row (`modulecode` NULL, `paid = 1`) is the customer's **Advance**: `gst/sales/app/sales.asp` sums those rows for the customer, `sales.js` shows "Advance: ₹…" with a **Select Payments** button on every Sales Invoice of that customer with a balance, and `app/testmodal.asp` `AdvanceListmodal` lists them. AMC and CALLS receipts left on account would be adjustable against unrelated sales invoices and the AMC contract would show "No Invoice". So AMC bills and call bills are billed as Sales Invoices and each receipt line is allocated to its invoice.
 
 **The standard way (read in the code).** A contract billing cycle is billed by a Sales Invoice linked with `billingcycle.salcode` (`updateBillingCycle`, `LinkBillingCycleWithInvoice`); the Billing Cycle tab shows Billed / Unbilled from it, the contract Invoice tab lists `sal_order where code in (select salcode from billingcycle …)`, and `getOutStandingAmount` takes tax, adjustments and `payments.module = 'sal'` receipts from those invoices. The app's AMC invoice line is "Amc Product" (qty 1) and it never sets `sal_order.module`. A payment reaches an invoice through `paymentdetails.modulecode` + `payments.module = 'Sal'` (`addpaymentinout`). Our complaint has no invoice link, so a call bill is an ordinary Sales Invoice that names the call.
