@@ -11,7 +11,9 @@ using static eBizWiztoEdifyBiz.Shared;
 // ============================================================================
 //  eBizWiz -> EdifyBiz  Data Migration  (single file, .NET Framework 4.7.2)
 //  All modules live here, block-wise (one static class per module).
-//  SAFETY: SELECT the source, INSERT into the target. No destructive operations.
+//  SAFETY: SELECT the source, INSERT into the target. The only deletes are in CLEAN below, which
+//  removes what an earlier run of this exe wrote (scoped to our branches / markers) so a re-run
+//  needs no database restore; masters and the predefined EdifyBiz data are never touched.
 // ============================================================================
 namespace eBizWiztoEdifyBiz
 {
@@ -23,6 +25,8 @@ namespace eBizWiztoEdifyBiz
         // Same server / uid / pwd for both databases.
         public const string srccnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=saksham70v1_1;Uid=sa;Pwd=password@1;";
         public const string tgtcnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=SakshamRMtP15329;Uid=sa;Pwd=password@1;";
+        // public const string srccnstr = @"Server=EDIFY001;Database=saksham70v1_1;Uid=sqladmin;Pwd=C6H4$#$123$#;";
+        // public const string tgtcnstr = @"Server=EDIFY001;Database=SakshamRMtP15329;Uid=sqladmin;Pwd=C6H4$#$123$#;";
 
         // User stamped as creator/updater on every migrated row (1 = Admin).
         public const int MigrationUser = 1;
@@ -37,6 +41,13 @@ namespace eBizWiztoEdifyBiz
         public static readonly Dictionary<string, int> PartyToContact = new Dictionary<string, int>();
         // source mstusers NKey -> target users.code (by name). Resolves each salesperson to the real user.
         public static readonly Dictionary<string, int> UserByCode = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        // "<database> on <server>" out of a connection string, for the banner. - Aftab Alam
+        public static string Where(string cnstr)
+        {
+            SqlConnectionStringBuilder b = new SqlConnectionStringBuilder(cnstr);
+            return b.InitialCatalog + " on " + b.DataSource;
+        }
 
         // ---- connections ----
         public static SqlConnection OpenSrc() { SqlConnection c = new SqlConnection(srccnstr); c.Open(); return c; }
@@ -511,8 +522,9 @@ namespace eBizWiztoEdifyBiz
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("############################################################");
             Console.WriteLine("#   eBizWiz -> EdifyBiz  Data Migration                    #");
-            Console.WriteLine("#   Source : saksham70v1_1                                 #");
-            Console.WriteLine("#   Target : SakshamRMtP15329                              #");
+            // Printed from the connection strings themselves, so what you see IS where it will write. - Aftab Alam
+            Console.WriteLine("#   Source : " + Shared.Where(Shared.srccnstr).PadRight(45) + "#");
+            Console.WriteLine("#   Target : " + Shared.Where(Shared.tgtcnstr).PadRight(45) + "#");
             Console.WriteLine("############################################################");
             Console.WriteLine();
 
@@ -560,26 +572,30 @@ namespace eBizWiztoEdifyBiz
             };
             Func<int, string> label = i => i < menu.GetLength(0) ? (menu[i, 0] + "  ->  " + menu[i, 1]) : names[i];
 
-            string choice = (args != null && args.Length > 0) ? string.Join(" ", args).Trim() : null;
-            if (choice == null)
+            // One run = CLEAN + every module in this order. Picking a single module is gone on purpose
+            // (senior, 12/10/2026): the modules build on each other, so they are always migrated together. - Aftab Alam
+            Console.WriteLine("Modules, in the order they run:   eBizWiz (client)  ->  EdifyBiz (ours)");
+            for (int i = 0; i < names.Length; i++) Console.WriteLine("  " + (i + 1).ToString().PadLeft(2) + ". " + menu[i, 0].PadRight(58) + "->  " + menu[i, 1]);
+            Console.WriteLine();
+
+            // Every run starts by clearing what the previous run of this exe wrote, so the database never
+            // has to be restored first. If that fails nothing is migrated, otherwise the modules would
+            // insert a second copy on top of the old rows. - Aftab Alam
+            try { Cleanup.Run(); }
+            catch (Exception ex)
             {
-                Console.WriteLine("Available modules:   eBizWiz (client)  ->  EdifyBiz (ours)");
-                //for (int i = 0; i < names.Length; i++) Console.WriteLine("  " + (i + 1) + ". " + names[i]);
-                for (int i = 0; i < names.Length; i++) Console.WriteLine("  " + (i + 1).ToString().PadLeft(2) + ". " + menu[i, 0].PadRight(58) + "->  " + menu[i, 1]);
-                Console.WriteLine("  A. Run ALL (in order)");
+                Console.WriteLine("!!! CLEAN failed: " + ex.Message);
+                Console.WriteLine(ex.StackTrace);
                 Console.WriteLine();
-                Console.Write("Select module (number / name / A): ");
-                choice = Console.ReadLine();
-                if (choice != null) choice = choice.Trim();
+                Console.WriteLine("Nothing was migrated. Press any key to exit.");
+                Console.ResetColor();
+                if (!Console.IsInputRedirected) Console.ReadKey();
+                return;
             }
 
-            List<int> toRun = Resolve(choice, names);
-            if (toRun.Count == 0) { Console.WriteLine("Nothing selected. Exiting."); return; }
-
-            foreach (int idx in toRun)
+            for (int idx = 0; idx < names.Length; idx++)
             {
                 Console.WriteLine();
-                //Console.WriteLine(">>> Running module: " + names[idx]);
                 Console.WriteLine(">>> Running module " + (idx + 1) + ": " + label(idx));
                 try { RunModule(idx); }
                 catch (Exception ex)
@@ -623,16 +639,198 @@ namespace eBizWiztoEdifyBiz
             }
         }
 
-        static List<int> Resolve(string choice, string[] names)
+    }
+
+    // ==================================================================
+    //  CLEAN : runs once, before the modules, so a re-run never needs a database restore first
+    //  (senior, 12/10/2026: a re-run must clear the old rows and insert again, not update them).
+    //  It removes ONLY what an earlier run of this exe wrote, and leaves everything else:
+    //    * masters stay untouched - every master seed in this exe is lookup-or-create (tax, status,
+    //      miscellaneous, label, country/state/city, unit, currency, currencyconversion, prodcat,
+    //      designation, users, checklist masters, company banks, default brand/model), so the next
+    //      run finds them and reuses them, and the client's predefined master rows are never deleted;
+    //    * the demo data the EdifyBiz database ships with stays, because every delete below is scoped
+    //      either to the branches THIS exe creates in companyaddress ("SAKSHAM - HO MUMBAI" /
+    //      "- BANGALORE" / "- DELHI" / "- KOLKATA") or to the module's own marker. Checked in
+    //      SakshamRMtP15329: companyaddress 1 "Mumbai" + 2 "South", inqcs 1-3 (Test Inquiry-001,
+    //      Test-00012, SO0012), pur_order 1 (PO-000123), contact 1-2 (Enliten IT India, Serum India),
+    //      product 1 "Dummy Product" and the branch-0 productstocksummary / stocktrans rows all fall
+    //      outside the scope below, so they survive every re-run;
+    //    * other companies in the same database stay out of reach - the live DB holds Saksham (company 1),
+    //      Esco Biotech (2) and Labinco (3), so the deletes that have no branch column (customer rating,
+    //      target, task, expense) also require createdby = the migration user, and the rating rows must
+    //      belong to a complaint of ours. - Aftab Alam
+    // ==================================================================
+    static class Cleanup
+    {
+        static int _tables, _rows;
+
+        public static void Run()
         {
-            List<int> list = new List<int>();
-            if (string.IsNullOrWhiteSpace(choice)) return list;
-            if (choice.Equals("A", StringComparison.OrdinalIgnoreCase) || choice.Equals("all", StringComparison.OrdinalIgnoreCase))
-            { for (int i = 0; i < names.Length; i++) list.Add(i); return list; }
-            int n;
-            if (int.TryParse(choice, out n) && n >= 1 && n <= names.Length) { list.Add(n - 1); return list; }
-            for (int i = 0; i < names.Length; i++) if (names[i].Equals(choice, StringComparison.OrdinalIgnoreCase)) { list.Add(i); return list; }
-            return list;
+            Console.WriteLine(">>> CLEAN : clearing the previous run (masters and predefined data are left alone)");
+            _tables = 0; _rows = 0;
+
+            using (SqlConnection tgt = OpenTgt())
+            {
+                string br = OurBranches(tgt);
+                if (br.Length == 0)
+                {
+                    Console.WriteLine("  No migration branch in companyaddress yet - nothing to clear (first run).");
+                    Console.WriteLine("-----------------------------------------------------");
+                    return;
+                }
+                Console.WriteLine("  Migration branches (companyaddress.code) : " + br);
+
+                string qbr   = "'" + br.Replace(",", "','") + "'";    // contact / product keep the branch as text
+                string ourC  = "(SELECT code FROM contact WHERE companybranch IN (" + qbr + "))";
+                string ourP  = "(SELECT code FROM product WHERE companybranch IN (" + qbr + "))";
+                string ourInq = "(SELECT code FROM inqcs WHERE branchcode IN (" + br + "))";
+                string ourSal = "(SELECT code FROM sal_order WHERE branchcode IN (" + br + "))";
+                string ourPur = "(SELECT code FROM pur_order WHERE branchcode IN (" + br + "))";
+                string ourAmc = "(SELECT code FROM amc WHERE branch IN (" + br + "))";
+                string ourCall = "(SELECT code FROM contractcall WHERE ccode IN " + ourC + ")";
+                string ourSio = "(SELECT code FROM stockinout WHERE branchcode IN (" + br + "))";
+                string ourB2b = "(SELECT code FROM stockb2b WHERE frombranchcode IN (" + br + ") OR tobranchcode IN (" + br + "))";
+                string ourPay = "(SELECT code FROM payments WHERE ccode IN " + ourC + ")";
+                string ourTsk = "(SELECT code FROM task WHERE createdby = " + MigrationUser + " AND module IS NULL)";
+                string ourExp = "(SELECT code FROM expense WHERE createdby = " + MigrationUser + ")";
+                string ourRel = "(SELECT code FROM prodbrandrelation WHERE prodcode IN " + ourP + ")";
+                string ourPbm = "(SELECT code FROM prodbrandmodel WHERE pbcode IN " + ourRel + ")";
+
+                // Sales Invoice + AMC contract bills + service call bills (all three are sal_order rows of our branches)
+                Del(tgt, "sal_adjust",             "DELETE FROM sal_adjust WHERE salcode IN " + ourSal);
+                Del(tgt, "sal_tax",                "DELETE FROM sal_tax WHERE sal_code IN " + ourSal);
+                Del(tgt, "sal_order_det",          "DELETE FROM sal_order_det WHERE salcode IN " + ourSal);
+                Del(tgt, "taskchecklist (SAL)",    "DELETE FROM taskchecklist WHERE module = 'SAL' AND modulecode IN " + ourSal);
+                Del(tgt, "labelrelation (SAL)",    "DELETE FROM labelrelation WHERE module IN " + ourSal + " AND label IN (SELECT code FROM label WHERE category = 'SAL')");
+                Del(tgt, "sal_order",              "DELETE FROM sal_order WHERE branchcode IN (" + br + ")");
+
+                // Inventory : GRN / MRO / GTA / JV and the stock ledger of our branches
+                Del(tgt, "stocktrans",             "DELETE FROM stocktrans WHERE branchcode IN (" + br + ")");
+                Del(tgt, "stockinoutdet",          "DELETE FROM stockinoutdet WHERE stockinoutcode IN " + ourSio);
+                Del(tgt, "stockinout",             "DELETE FROM stockinout WHERE branchcode IN (" + br + ")");
+                Del(tgt, "stockb2bdet",            "DELETE FROM stockb2bdet WHERE stockb2bcode IN " + ourB2b);
+                Del(tgt, "stockb2b",               "DELETE FROM stockb2b WHERE frombranchcode IN (" + br + ") OR tobranchcode IN (" + br + ")");
+                // The receiving leg of an in-transit GTA is written on branch 0 (the goods left the branch but have not
+                // arrived), so "branchcode IN (our branches)" above never reached it and those rows piled up on every
+                // run. stockb2bdet is already gone by now, so a transit row of OURS has no parent left, while the
+                // client's own in-transit GTA still has its stockb2bdet row and is not touched. - Aftab Alam 28/10/2026
+                Del(tgt, "stocktrans (GTA transit)", "DELETE FROM stocktrans WHERE module = 'GTA' AND isnull(branchcode,0) = 0 AND NOT EXISTS (SELECT 1 FROM stockb2bdet d WHERE d.code = stocktrans.modulecode)");
+                Del(tgt, "stockjv",                "DELETE FROM stockjv WHERE branchcode IN (" + br + ")");
+                Del(tgt, "productstocksummary",    "DELETE FROM productstocksummary WHERE branchcode IN (" + br + ")");
+                // ... and the branch 0 summary rows those transit movements built, once no transit ledger row is left.
+                Del(tgt, "productstocksummary (transit)", "DELETE FROM productstocksummary WHERE isnull(branchcode,0) = 0 AND NOT EXISTS (SELECT 1 FROM stocktrans t WHERE isnull(t.branchcode,0) = 0 AND t.productcode = productstocksummary.prodcode AND isnull(t.prodbatchcode,0) = isnull(productstocksummary.prodbatchcode,0))");
+
+                // Payment, customer rating, sales target, campaign (each one carries this migration's own marker)
+                Del(tgt, "paymentdetails",         "DELETE FROM paymentdetails WHERE paycode IN " + ourPay);
+                Del(tgt, "payments",               "DELETE FROM payments WHERE ccode IN " + ourC);
+                Del(tgt, "customerfeedback",       "DELETE FROM customerfeedback WHERE module = 'COM' AND createdby = " + MigrationUser + " AND modulecode IN " + ourCall);
+                Del(tgt, "target",                 "DELETE FROM target WHERE module = 'SAL' AND createdby = " + MigrationUser);
+                Del(tgt, "mmcampaign",             "DELETE m FROM mmcampaign m WHERE m.createdby = " + MigrationUser +
+                                                   " AND m.body LIKE '" + Campaign.Marker + "%'" +
+                                                   " AND NOT EXISTS (SELECT 1 FROM mmcampaignemails e WHERE e.mmccode = m.code)");
+
+                // AMC complaints and contract PMS visits (both are contractcall rows of our contacts)
+                Del(tgt, "amcusedproduct",         "DELETE FROM amcusedproduct WHERE complaintcode IN " + ourCall);
+                Del(tgt, "amcrequestedproduct",    "DELETE FROM amcrequestedproduct WHERE complaintcode IN " + ourCall);
+                Del(tgt, "callvisits",             "DELETE FROM callvisits WHERE contractcallcode IN " + ourCall);
+                Del(tgt, "followup (ACM)",         "DELETE FROM followup WHERE module = 'ACM' AND modulecode IN " + ourCall);
+                Del(tgt, "taskchecklist (ACM)",    "DELETE FROM taskchecklist WHERE module = 'ACM' AND modulecode IN " + ourCall);
+                Del(tgt, "labelrelation (AMC)",    "DELETE FROM labelrelation WHERE module IN " + ourCall + " AND label IN (SELECT code FROM label WHERE category = 'AMC')");
+                Del(tgt, "contractcall",           "DELETE FROM contractcall WHERE ccode IN " + ourC);
+
+                // AMC contracts (+ warranty contracts) and their billing cycles
+                Del(tgt, "billingcycle",           "DELETE FROM billingcycle WHERE amccode IN " + ourAmc);
+                Del(tgt, "contractdetails",        "DELETE FROM contractdetails WHERE contractcode IN " + ourAmc);
+                Del(tgt, "amc",                    "DELETE FROM amc WHERE branch IN (" + br + ")");
+
+                // Purchase Order
+                Del(tgt, "pur_order_det",          "DELETE FROM pur_order_det WHERE purcode IN " + ourPur);
+                Del(tgt, "taskchecklist (PUR)",    "DELETE FROM taskchecklist WHERE module = 'PUR' AND modulecode IN " + ourPur);
+                Del(tgt, "pur_order",              "DELETE FROM pur_order WHERE branchcode IN (" + br + ")");
+
+                // Customer Inquiry / Quotation / Sales Order / AMC Quotation (all four are inqcs rows)
+                Del(tgt, "inqcsdet",               "DELETE FROM inqcsdet WHERE inqcode IN " + ourInq);
+                Del(tgt, "inq_adjust",             "DELETE FROM inq_adjust WHERE inqcode IN " + ourInq);
+                Del(tgt, "taskchecklist (CI/CQ/SO)", "DELETE FROM taskchecklist WHERE module IN ('CI','CQ','SO') AND modulecode IN " + ourInq);
+                Del(tgt, "followup (INQ)",         "DELETE FROM followup WHERE module = 'INQ' AND modulecode IN " + ourInq);
+                Del(tgt, "inqcs",                  "DELETE FROM inqcs WHERE branchcode IN (" + br + ")");
+
+                // Task and Expense (no branch on these tables - the migration user is the marker)
+                Del(tgt, "ticket",                 "DELETE FROM ticket WHERE mcode IN " + ourTsk);
+                Del(tgt, "task",                   "DELETE FROM task WHERE createdby = " + MigrationUser + " AND module IS NULL");
+                Del(tgt, "expensestatus",          "DELETE FROM expensestatus WHERE expcode IN " + ourExp);
+                Del(tgt, "expensedetails",         "DELETE FROM expensedetails WHERE expensecode IN " + ourExp);
+                Del(tgt, "expense",                "DELETE FROM expense WHERE createdby = " + MigrationUser);
+
+                // Product, with its brand / model / batch chain and item-type labels
+                Del(tgt, "prodbatch",              "DELETE FROM prodbatch WHERE pbmcode IN " + ourPbm);
+                Del(tgt, "prodbrandmodel",         "DELETE FROM prodbrandmodel WHERE pbcode IN " + ourRel);
+                Del(tgt, "prodbrandrelation",      "DELETE FROM prodbrandrelation WHERE prodcode IN " + ourP);
+                Del(tgt, "labelrelation (PRO)",    "DELETE FROM labelrelation WHERE module IN " + ourP + " AND label IN (SELECT code FROM label WHERE category = 'PRO')");
+                Del(tgt, "contprod",               "DELETE FROM contprod WHERE productcode IN " + ourP + " OR contactcode IN " + ourC);
+                Del(tgt, "product",                "DELETE FROM product WHERE companybranch IN (" + qbr + ")");
+
+                // Contact last - every module above hangs off it
+                Del(tgt, "mltcontact",             "DELETE FROM mltcontact WHERE ccode IN " + ourC);
+                Del(tgt, "mltaddress",             "DELETE FROM mltaddress WHERE ccode IN " + ourC);
+                Del(tgt, "contact",                "DELETE FROM contact WHERE companybranch IN (" + qbr + ")");
+            }
+
+            Console.WriteLine("-----------------------------------------------------");
+            Console.WriteLine("  Cleared : " + _rows + " rows from " + _tables + " tables");
+            Console.WriteLine("-----------------------------------------------------");
+        }
+
+        // The branches this exe created in companyaddress, found by the same place name EnsureBranches
+        // builds from mstoffice.vcompanyname. Nothing is created here: a name that is not there yet
+        // simply means that office has never been migrated, so there is nothing of ours to clear.
+        static string OurBranches(SqlConnection tgt)
+        {
+            Dictionary<int, string> officeName = SrcLookupInt("SELECT ncode, vcompanyname FROM mstoffice WITH (NOLOCK)");
+            List<string> codes = new List<string>();
+            foreach (int office in Offices)
+            {
+                string nm;
+                string place = officeName.TryGetValue(office, out nm) && nm.Length > 0
+                    ? (nm.Length > 100 ? nm.Substring(0, 100) : nm) : "Office " + office;
+                using (SqlCommand q = new SqlCommand("SELECT code FROM companyaddress WHERE ccode = @cc AND place = @pl", tgt))
+                {
+                    q.Parameters.AddWithValue("@cc", CompanyCode);
+                    q.Parameters.AddWithValue("@pl", place);
+                    object o = q.ExecuteScalar();
+                    if (o != null && o != DBNull.Value) codes.Add(Convert.ToInt32(o).ToString(CultureInfo.InvariantCulture));
+                }
+            }
+            return string.Join(",", codes.ToArray());
+        }
+
+        // Deleted in batches: one DELETE of a whole table (inqcsdet alone is ~856,000 rows) has to be held by the
+        // transaction log in one piece, which filled the log on the live server. TOP (DelBatch) keeps each
+        // transaction small; the WHERE and the row count stay exactly the same. - Aftab Alam 25/10/2026
+        const int DelBatch = 25000;
+
+        static void Del(SqlConnection tgt, string what, string sql)
+        {
+            // "DELETE FROM x WHERE ..." -> "DELETE TOP (25000) FROM x WHERE ...";
+            // the one "DELETE m FROM ..." statement becomes "DELETE TOP (25000) m FROM ..." the same way.
+            string batched = sql.Trim();
+            if (batched.StartsWith("DELETE ", StringComparison.OrdinalIgnoreCase))
+                batched = "DELETE TOP (" + DelBatch + ") " + batched.Substring(7);
+
+            int total = 0;
+            while (true)
+            {
+                int n;
+                using (SqlCommand c = new SqlCommand(batched, tgt))
+                {
+                    c.CommandTimeout = 0;
+                    n = c.ExecuteNonQuery();
+                }
+                total += n;
+                if (n < DelBatch) break;
+            }
+            if (total > 0) { _rows += total; _tables++; Console.WriteLine("  - " + what.PadRight(24) + " " + total); }
         }
     }
 
@@ -733,11 +931,14 @@ namespace eBizWiztoEdifyBiz
             int isDeleted = Bool(dr["bactive"]) ? 0 : 1;
 
             string tax1 = Str(dr["vtax1"]), tax2 = Str(dr["vtax2"]), tax3 = Str(dr["vtax3"]);
-            //string remark = BuildRemark(Str(dr["vremarks"]), tax1, tax2, tax3);
             string reminder = Str(dr["vremindermessage"]);
+            // Parsed here (before the remark) so a Tax value that reaches the address is not repeated in the remark. - Aftab Alam
+            string taxGst, taxPan, taxIec, taxVat;
+            bool[] taxInAddress = new bool[3];
+            ParseTax(new string[] { tax1, tax2, tax3 }, out taxGst, out taxPan, out taxIec, out taxVat, taxInAddress);
             // contact.custom1 is not shown anywhere in EdifyBiz, so the Reminder Message is also written into the remark
-            // (same as Tax1-3: column + remark) so the user can see it on the Contact view. - Aftab Alam
-            string remark = BuildRemark(Str(dr["vremarks"]), tax1, tax2, tax3);
+            // so the user can see it on the Contact view. - Aftab Alam
+            string remark = BuildRemark(Str(dr["vremarks"]), tax1, tax2, tax3, taxInAddress);
             if (!string.IsNullOrWhiteSpace(reminder)) remark = string.IsNullOrWhiteSpace(remark) ? "Reminder Message: " + reminder : remark + " | Reminder Message: " + reminder;
 
             int office = Int(dr["nofficeid"]);
@@ -750,8 +951,6 @@ namespace eBizWiztoEdifyBiz
             // eBizWiz Added By / Edited By -> Created By / Updated By (contact view + persons grid). owner stays the
             // migration user, because ownership drives who sees the contact in EdifyBiz. - Aftab Alam
             object partyCreatedBy = CreatedByUser(dr["addedby"]), partyUpdatedBy = UpdatedByUser(dr["addedby"], dr["editedby"]);
-            string taxGst, taxPan, taxIec, taxVat;
-            ParseTax(new string[] { tax1, tax2, tax3 }, out taxGst, out taxPan, out taxIec, out taxVat);
 
             int ncity = Int(dr["ncity"]);
             int? cityCode = ResolveCity(ncity);
@@ -869,26 +1068,29 @@ namespace eBizWiztoEdifyBiz
         static readonly Regex _rePan = new Regex("\\b[A-Z]{5}[0-9]{4}[A-Z]\\b", RegexOptions.IgnoreCase);
         static readonly Regex _reNum = new Regex("[0-9A-Z]{6,20}", RegexOptions.IgnoreCase);
         static int _taxGst, _taxPan, _taxIec, _taxVat;
-        static void ParseTax(string[] vals, out string gst, out string pan, out string iec, out string vat)
+        // stored[i] = true when vals[i] is the value that ended up on the address, so the caller can leave it out of the remark.
+        static void ParseTax(string[] vals, out string gst, out string pan, out string iec, out string vat, bool[] stored)
         {
             gst = ""; pan = ""; iec = ""; vat = "";
-            foreach (string v0 in vals)
+            for (int i = 0; i < vals.Length; i++)
             {
-                string v = (v0 ?? "").Trim(); if (v.Length == 0) continue;
+                string v = (vals[i] ?? "").Trim(); if (v.Length == 0) continue;
                 Match m = _reGst.Match(v);
-                if (m.Success) { if (gst.Length == 0) gst = m.Value.ToUpperInvariant(); continue; }
+                if (m.Success) { string g = m.Value.ToUpperInvariant(); if (gst.Length == 0) { gst = g; Mark(stored, i); } else if (gst == g) Mark(stored, i); continue; }
                 string label = v.ToUpperInvariant();
                 string tail = label.IndexOf(':') >= 0 ? label.Substring(label.IndexOf(':') + 1) : label;
-                if (label.Contains("IEC")) { Match n = _reNum.Match(tail); if (n.Success && iec.Length == 0) iec = n.Value; continue; }
-                if (label.Contains("TIN") || label.Contains("VAT") || label.Contains("CST")) { Match n = _reNum.Match(tail); if (n.Success && vat.Length == 0) vat = n.Value; continue; }
+                if (label.Contains("IEC")) { Match n = _reNum.Match(tail); if (n.Success) { if (iec.Length == 0) { iec = n.Value; Mark(stored, i); } else if (iec == n.Value) Mark(stored, i); } continue; }
+                if (label.Contains("TIN") || label.Contains("VAT") || label.Contains("CST")) { Match n = _reNum.Match(tail); if (n.Success) { if (vat.Length == 0) { vat = n.Value; Mark(stored, i); } else if (vat == n.Value) Mark(stored, i); } continue; }
                 Match pm = _rePan.Match(v);
-                if (pm.Success && pan.Length == 0) pan = pm.Value.ToUpperInvariant();
+                if (pm.Success) { string p = pm.Value.ToUpperInvariant(); if (pan.Length == 0) { pan = p; Mark(stored, i); } else if (pan == p) Mark(stored, i); }
             }
             if (gst.Length > 0) _taxGst++;
             if (pan.Length > 0) _taxPan++;
             if (iec.Length > 0) _taxIec++;
             if (vat.Length > 0) _taxVat++;
         }
+
+        static void Mark(bool[] a, int i) { if (a != null && i >= 0 && i < a.Length) a[i] = true; }
 
         static int InsertAddress(SqlConnection tgt, SqlTransaction tx, int ccode, string place, string address, string area,
             int? cityCode, string pincode, string tel1, string tel2, string email1, string fax1, string website1,
@@ -1331,13 +1533,15 @@ namespace eBizWiztoEdifyBiz
             catch { }
         }
 
-        static string BuildRemark(string remark, string tax1, string tax2, string tax3)
+        // A Tax value whose number was stored on the address (Licenses & Statutories tab) is NOT repeated in the remark;
+        // the ones that match no pattern have no other place, so they stay here. - Aftab Alam
+        static string BuildRemark(string remark, string tax1, string tax2, string tax3, bool[] inAddress)
         {
             List<string> parts = new List<string>();
             if (!string.IsNullOrWhiteSpace(remark)) parts.Add(remark);
-            if (!string.IsNullOrWhiteSpace(tax1)) parts.Add("Tax1: " + tax1);
-            if (!string.IsNullOrWhiteSpace(tax2)) parts.Add("Tax2: " + tax2);
-            if (!string.IsNullOrWhiteSpace(tax3)) parts.Add("Tax3: " + tax3);
+            if (!inAddress[0] && !string.IsNullOrWhiteSpace(tax1)) parts.Add("Tax1: " + tax1);
+            if (!inAddress[1] && !string.IsNullOrWhiteSpace(tax2)) parts.Add("Tax2: " + tax2);
+            if (!inAddress[2] && !string.IsNullOrWhiteSpace(tax3)) parts.Add("Tax3: " + tax3);
             return string.Join(" | ", parts);
         }
 
@@ -1367,12 +1571,12 @@ namespace eBizWiztoEdifyBiz
         static Dictionary<int, Curr> _srcCurrency;
         static Dictionary<string, int> _partyContact;
         static Dictionary<int, List<string>> _suppliers;
-        static readonly Dictionary<int, int> _labelByItemType = new Dictionary<int, int>();   // mstitemtype.ncode -> label.code (category PRO) - Aftab Alam
+        static readonly Dictionary<int, int> _subcatByItemType = new Dictionary<int, int>();   // mstitemtype.ncode -> prodcat.code (type 'S' = Sub Category) - Aftab Alam
         static readonly Dictionary<int, int> _mapCategory = new Dictionary<int, int>();
         static readonly Dictionary<int, int> _mapUnit = new Dictionary<int, int>();
         static readonly Dictionary<int, int> _mapCurrency = new Dictionary<int, int>();
         static readonly Dictionary<int, int> _branchByOffice = new Dictionary<int, int>();
-        static int _cItems, _cContprod, _cSkipped, _cErrors, _cItemTypeLabels, _newItemTypeLabels, _newProdCat, _newUnit, _newCurrency, _ccodeResolved, _ccodeUnresolved;
+        static int _cItems, _cContprod, _cSkipped, _cErrors, _cItemTypeSubCat, _newItemTypeSubCat, _newProdCat, _newUnit, _newCurrency, _ccodeResolved, _ccodeUnresolved;
         static int _defBrand, _defModel, _cBatch;   // inventory chain: Default Brand / model 'default' / Default Batch - Aftab Alam
 
         public static void Run()
@@ -1386,7 +1590,7 @@ namespace eBizWiztoEdifyBiz
 
             using (SqlConnection tgt = OpenTgt())
             {
-                EnsureItemTypeLabels(tgt);
+                SeedItemTypeSubCat(tgt);
                 SeedProdCat(tgt);
                 SeedUnit(tgt);
                 SeedCurrency(tgt);
@@ -1398,7 +1602,7 @@ namespace eBizWiztoEdifyBiz
                 EnsureUserByCode();   // module 2 may run on its own; Created By needs the user map - Aftab Alam
                 LoadSuppliers();
 
-                Console.WriteLine("Masters mapped: item type labels=" + _labelByItemType.Count + "(+" + _newItemTypeLabels + " new), category=" + _mapCategory.Count + "(+" + _newProdCat +
+                Console.WriteLine("Masters mapped: item type sub categories=" + _subcatByItemType.Count + "(+" + _newItemTypeSubCat + " new), category=" + _mapCategory.Count + "(+" + _newProdCat +
                                   "), unit=" + _mapUnit.Count + "(+" + _newUnit + "), currency=" + _mapCurrency.Count + "(+" + _newCurrency + ")");
                 Console.WriteLine("Party->Contact names: " + _partyContact.Count + " | Suppliers grouped: " + _suppliers.Count + " items | Branches: " + _branchByOffice.Count);
                 Console.WriteLine("-----------------------------------------------------");
@@ -1432,8 +1636,8 @@ namespace eBizWiztoEdifyBiz
             Console.WriteLine("  contprod rows     : " + _cContprod + "  (Principal + Suppliers)");
             Console.WriteLine("  Default Batch     : " + _cBatch + "  (brand code " + _defBrand + " / model code " + _defModel + ")");
             Console.WriteLine("  Principal ccode   : " + _ccodeResolved + " resolved, " + _ccodeUnresolved + " unresolved");
-            Console.WriteLine("  Item Type labels  : " + _cItemTypeLabels + " products labelled (category PRO)");
-            Console.WriteLine("  Masters added     : item type labels " + _newItemTypeLabels + ", prodcat " + _newProdCat + ", unit " + _newUnit + ", currency " + _newCurrency);
+            Console.WriteLine("  Item Type subcat  : " + _cItemTypeSubCat + " products given the Sub Category");
+            Console.WriteLine("  Masters added     : item type sub categories " + _newItemTypeSubCat + ", prodcat " + _newProdCat + ", unit " + _newUnit + ", currency " + _newCurrency);
             Console.WriteLine("  Skipped (no name) : " + _cSkipped);
             Console.WriteLine("  Errors            : " + _cErrors);
             Console.WriteLine("-----------------------------------------------------");
@@ -1476,14 +1680,17 @@ namespace eBizWiztoEdifyBiz
                 int contprodN = 0;
                 try
                 {
+                    // Item Type -> product Sub Category. 17/10/2026: the item type used to be written as a PRO
+                    // label; it is now the Sub Category field and no label is written for it. - Aftab Alam
+                    int subcatCode; object prodSubCat = _subcatByItemType.TryGetValue(itemTypeId, out subcatCode) ? (object)subcatCode : DBNull.Value;
                     int pcode;
                     string insP = @"
                         INSERT INTO product
-                            (name, casno, profile, remark, grade, type, prodcat, unitcode, currency,
+                            (name, casno, profile, remark, grade, type, prodcat, prodsubcat, unitcode, currency,
                              price, minimumprice, ccode, companybranch, baseqty, isdeleted,
                              createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
-                        VALUES (@name, @casno, @profile, @remark, @grade, @type, @prodcat, @unit, @curr,
+                        VALUES (@name, @casno, @profile, @remark, @grade, @type, @prodcat, @prodsubcat, @unit, @curr,
                                 @price, @cost, @ccode, @branch, 1, @isdel,
                                 @crb, @ubr, @con, @uon)";
                     using (SqlCommand c = new SqlCommand(insP, tgt, tx))
@@ -1495,6 +1702,8 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@grade", PS(className));
                         c.Parameters.AddWithValue("@type", type);
                         c.Parameters.AddWithValue("@prodcat", prodcat);
+                        // Item Type -> Sub Category (prodcat type 'S'), the client's Item Type as the product's Sub Category. - Aftab Alam
+                        c.Parameters.AddWithValue("@prodsubcat", prodSubCat);
                         c.Parameters.AddWithValue("@unit", unitcode);
                         c.Parameters.AddWithValue("@curr", currency);
                         c.Parameters.AddWithValue("@price", price);
@@ -1516,19 +1725,6 @@ namespace eBizWiztoEdifyBiz
                     // search (selectjson ProductInvoice needs a batch) and invoice/PO lines have no batch. - Aftab Alam
                     CreateDefaultBatch(tgt, tx, pcode);
 
-                    // Item Type -> Product label (category PRO). - Aftab Alam
-                    int itemLabel; bool labelled = false;
-                    if (_labelByItemType.TryGetValue(itemTypeId, out itemLabel))
-                    {
-                        using (SqlCommand lr = new SqlCommand("INSERT INTO labelrelation (label, module, createdon, createdby) VALUES (@l, @m, @con, @cb)", tgt, tx))
-                        {
-                            lr.Parameters.AddWithValue("@l", itemLabel); lr.Parameters.AddWithValue("@m", pcode);
-                            lr.Parameters.AddWithValue("@con", createdon); lr.Parameters.AddWithValue("@cb", MigrationUser);
-                            lr.ExecuteNonQuery();
-                        }
-                        labelled = true;
-                    }
-
                     // Suppliers -> contprod 'S'. Principal (nparty) lives in product.ccode only; not a supplier.
                     HashSet<int> added = new HashSet<int>();
                     List<string> supKeys;
@@ -1543,7 +1739,7 @@ namespace eBizWiztoEdifyBiz
                     }
 
                     tx.Commit();
-                    _cItems++; _cContprod += contprodN; if (labelled) _cItemTypeLabels++;
+                    _cItems++; _cContprod += contprodN; if (prodSubCat != DBNull.Value) _cItemTypeSubCat++;
                     if (_cItems % 1000 == 0) Console.WriteLine("   ... " + _cItems + " products migrated");
                 }
                 catch { tx.Rollback(); throw; }
@@ -1637,40 +1833,32 @@ namespace eBizWiztoEdifyBiz
         }
 
 
-        // Item Type (MODELS / SPARES / Accessories / Equipment / freight charges …) -> Product label, category 'PRO'.
-        // Not product.prodtype: prod_type is EdifyBiz's TAX TYPE master (product save copies prod_type_tax into
-        // prod_tax, the view labels it "Tax Type"), and client item types are not the parents of item categories
-        // (253 categories sit under several types). Labels show in the product list and view. - Aftab Alam
-        static void EnsureItemTypeLabels(SqlConnection tgt)
+        // Item Type (MODELS / SPARES / Accessories / Equipment / freight charges …) -> the product's **Sub Category**
+        // (`prodcat` with type 'S', the flat list behind the Sub Category dropdown).
+        // 17/10/2026: until then the item type was written as a Product label (category 'PRO'); it is now the Sub
+        // Category and no label is written for it. Not product.prodtype: prod_type is EdifyBiz's TAX TYPE master
+        // (product save copies prod_type_tax into prod_tax, the view labels it "Tax Type"), and client item types
+        // are not the parents of item categories (253 categories sit under several types). - Aftab Alam
+        static void SeedItemTypeSubCat(SqlConnection tgt)
         {
-            string[] colors = { "#29BF94", "#FBC617", "#C068F7", "#04C842", "#D3903E", "#BEBED0", "#DDEE7A", "#FDC425", "#a83886", "#B4B6B6", "#3865a8", "#da610b" };
-            int i = 0;
-            //foreach (DataRow r in GetSrc("SELECT DISTINCT nitemtype FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND nitemtype IS NOT NULL AND nitemtype > 0 ORDER BY nitemtype").Tables[0].Rows)
+            Dictionary<string, int> tmap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT code, name FROM prodcat WHERE type = 'S'").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !tmap.ContainsKey(n)) tmap[n] = Int(r["code"]); }
+
             // Master > Item > Item Type: every ACTIVE client type (as listed on the client screen) + any inactive one used by an item - same rule as currency / party type. - Aftab Alam
-            foreach (DataRow r in GetSrc("SELECT ncode AS nitemtype FROM mstitemtype WITH (NOLOCK) WHERE bactive = 1 UNION SELECT DISTINCT nitemtype FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND nitemtype IS NOT NULL AND nitemtype > 0 ORDER BY nitemtype").Tables[0].Rows)
+            foreach (DataRow r in GetSrc("SELECT ncode AS nitemtype FROM mstitemtype WITH (NOLOCK) WHERE bactive = 1 UNION SELECT DISTINCT nitemtype FROM mstitems WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND nitemtype IS NOT NULL AND nitemtype > 0").Tables[0].Rows)
             {
                 int id = Int(r[0]); ItemType it;
                 if (!_srcItemType.TryGetValue(id, out it)) continue;
-                string nm = Cap((it.Name ?? "").Trim(), 50);      // label.name varchar(50)
+                string nm = Cap((it.Name ?? "").Trim(), 250);     // prodcat.name nvarchar(250)
                 if (nm.Length == 0) continue;
-                int code = 0;
-                using (SqlCommand q = new SqlCommand("SELECT TOP 1 code FROM label WHERE category='PRO' AND name=@n ORDER BY code", tgt))
+                int code;
+                if (!tmap.TryGetValue(nm, out code))
                 {
-                    q.Parameters.AddWithValue("@n", nm);
-                    object o = q.ExecuteScalar();
-                    if (o != null && o != DBNull.Value) code = Convert.ToInt32(o);
+                    using (SqlCommand ins = new SqlCommand("INSERT INTO prodcat (name, type, createdby, updatedby, createdon, updatedon) OUTPUT INSERTED.code VALUES (@n, 'S', @cb, @cb, GETDATE(), GETDATE())", tgt))
+                    { ins.Parameters.AddWithValue("@n", nm); ins.Parameters.AddWithValue("@cb", MigrationUser); code = Convert.ToInt32(ins.ExecuteScalar()); }
+                    tmap[nm] = code; _newItemTypeSubCat++;
                 }
-                if (code == 0)
-                {
-                    using (SqlCommand ins = new SqlCommand("INSERT INTO label (name, category, color, createdby, createdon, updatedby, updatedon) OUTPUT INSERTED.code VALUES (@n, 'PRO', @c, @cb, GETDATE(), @cb, GETDATE())", tgt))
-                    {
-                        ins.Parameters.AddWithValue("@n", nm); ins.Parameters.AddWithValue("@c", colors[i % colors.Length]); ins.Parameters.AddWithValue("@cb", MigrationUser);
-                        code = Convert.ToInt32(ins.ExecuteScalar());
-                    }
-                    _newItemTypeLabels++;
-                }
-                _labelByItemType[id] = code;
-                i++;
+                _subcatByItemType[id] = code;
             }
         }
 
@@ -1868,7 +2056,7 @@ namespace eBizWiztoEdifyBiz
     // ==================================================================
     static class CustomerInquiry
     {
-        public class InqTarget { public int Code; public int Cs; public string Party; public string ActionType; }
+        public class InqTarget { public int Code; public int Cs; public string Party; public string ActionType; public int Status; }
 
         static Dictionary<int, string> _fixed, _inqCategory, _inqSource, _lostReason, _salesStage, _officeName;
         static Dictionary<int, string> _probability, _checkset, _checkName;                                   // remark names + check list - Aftab Alam
@@ -1881,6 +2069,8 @@ namespace eBizWiztoEdifyBiz
         static Dictionary<int, int> _mapSalesStage = new Dictionary<int, int>();
         static Dictionary<int, int> _mapLostReason = new Dictionary<int, int>();
         static Dictionary<int, int> _mapCallType = new Dictionary<int, int>();
+        static Dictionary<int, int> _mapProbability = new Dictionary<int, int>();
+        static Dictionary<int, int> _mapInqValue = new Dictionary<int, int>();
         static Dictionary<string, int> _custByParty = new Dictionary<string, int>();
         static readonly Dictionary<int, int> _branchByContact = new Dictionary<int, int>();
         static Dictionary<int, int> _prodByItem = new Dictionary<int, int>();
@@ -1905,6 +2095,12 @@ namespace eBizWiztoEdifyBiz
                 SeedCategories(tgt);
                 SeedSalesStageAndLostReason(tgt);
                 SeedInqMiscMap(tgt, "Inquiry Source", "ninquirysource", "trhinqry", _inqSource, true);
+                // Probability % of Getting The Order / Inquiry Value : own fields on the inquiry now, seeded like the other
+                // Inquiry dropdowns. Probability is a master of its own (seed every value, the sync below switches off the
+                // ones the client has inactive); Inquiry Value lives in the shared mstfixedselection, so only the values
+                // actually used are seeded - same rule as Call Type. - Aftab Alam
+                _mapProbability = SeedInqMiscMap(tgt, "Probability", "nprobability", "trhinqry", _probability, true);
+                _mapInqValue = SeedInqMiscMap(tgt, "Inquiry Value", "ninqvalue", "trhinqry", _fixed, false);
                 SyncInquiryMasterActive(tgt);   // client Active flag -> miscellaneous.active - Aftab Alam
                 BuildCustomerMap(tgt);
                 BuildBranchByContact(tgt);
@@ -1990,6 +2186,8 @@ namespace eBizWiztoEdifyBiz
             int stcode; object stage = _mapSalesStage.TryGetValue(Int(dr["nsalesstage"]), out stcode) ? (object)stcode : DBNull.Value;
             int lrcode; object lossreason = _mapLostReason.TryGetValue(Int(dr["nlostreasons"]), out lrcode) ? (object)lrcode : DBNull.Value;
             int ctcode; object calltype = _mapCallType.TryGetValue(Int(dr["ninquiryby"]), out ctcode) ? (object)ctcode : DBNull.Value;
+            int prcode; object inqprobability = _mapProbability.TryGetValue(Int(dr["nprobability"]), out prcode) ? (object)prcode : DBNull.Value;
+            int ivcode; object inqvalue = _mapInqValue.TryGetValue(Int(dr["ninqvalue"]), out ivcode) ? (object)ivcode : DBNull.Value;
 
             using (SqlTransaction tx = tgt.BeginTransaction())
             {
@@ -2000,10 +2198,10 @@ namespace eBizWiztoEdifyBiz
                     string ins = @"
                         INSERT INTO inqcs
                             (cors, inqref, inqdate, validdate, cscode, csbranch, cperson, executive, status, Category, sources,
-                             types, stage, lossreason, calltype, comcode, branchcode, remark, approvalstatus, createdby, updatedby, createdon, updatedon)
+                             types, stage, lossreason, calltype, inqprobability, inqvalue, comcode, branchcode, remark, additionalinstruction, approvalstatus, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
                         VALUES ('CI', @inqref, @inqdate, @validdate, @cscode, @csbranch, @cperson, @exec, @status, @cat, @sources,
-                                @types, @stage, @lossreason, @calltype, @com, @branch, @remark, '', @cb, @ub, @con, @uon)";
+                                @types, @stage, @lossreason, @calltype, @inqprob, @inqval, @com, @branch, @remark, @inqdetails, '', @cb, @ub, @con, @uon)";
                     // approvalstatus '' = what the app itself posts on every save (inquiry.js txtapprovalstatus ""); the column
                     // default 'Pending' would otherwise list migrated rows as awaiting approval. - Aftab Alam
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
@@ -2023,9 +2221,13 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@stage", stage);
                         c.Parameters.AddWithValue("@lossreason", lossreason);
                         c.Parameters.AddWithValue("@calltype", calltype);
+                        c.Parameters.AddWithValue("@inqprob", inqprobability);
+                        c.Parameters.AddWithValue("@inqval", inqvalue);
                         c.Parameters.AddWithValue("@com", CompanyCode);
                         c.Parameters.AddWithValue("@branch", branch);
                         c.Parameters.AddWithValue("@remark", PS(remark));
+                        // Inquiry Details has its own form field now (inqcs.additionalinstruction); it is no longer part of the remark. - Aftab Alam
+                        c.Parameters.AddWithValue("@inqdetails", PS(Str(dr["vinquirydetails"])));
                         //c.Parameters.AddWithValue("@cb", MigrationUser);
                         // Created By / Updated By = eBizWiz addedby / editedby (view "Created By / Updated By"). - Aftab Alam
                         c.Parameters.AddWithValue("@cb", CreatedByUser(dr["addedby"]));
@@ -2037,6 +2239,7 @@ namespace eBizWiztoEdifyBiz
 
                     InqTarget t = new InqTarget();
                     t.Code = code; t.Cs = csInt; t.Party = partyKey; t.ActionType = types;
+                    t.Status = (status == DBNull.Value) ? 0 : Convert.ToInt32(status);   // follow-up open/closed decision
                     InqByKey[office + "|" + ncode] = t;
 
                     List<int[]> plist;
@@ -2113,6 +2316,7 @@ namespace eBizWiztoEdifyBiz
             _inqSource = SrcLookupInt("SELECT ncode, vname FROM mstinquirysource WITH (NOLOCK)");
             _lostReason = SrcLookupInt("SELECT ncode, vname FROM mstorderlostreason WITH (NOLOCK)");
             _salesStage = SrcLookupInt("SELECT ncode, vname FROM mstsalesstage WITH (NOLOCK)");
+            _probability = SrcLookupInt("SELECT ncode, vname FROM mstprobability WITH (NOLOCK)");
             _officeName = SrcLookupInt("SELECT ncode, vcompanyname FROM mstoffice WITH (NOLOCK)");
         }
 
@@ -2122,7 +2326,7 @@ namespace eBizWiztoEdifyBiz
         // still show it on the view (views look the name up by code). - Aftab Alam
         static void SyncInquiryMasterActive(SqlConnection tgt)
         {
-            string[,] m = { { "Category", "mstinquirycategory" }, { "Inquiry Source", "mstinquirysource" }, { "Loss Reason", "mstorderlostreason" }, { "Sales Stage", "mstsalesstage" } };
+            string[,] m = { { "Category", "mstinquirycategory" }, { "Inquiry Source", "mstinquirysource" }, { "Loss Reason", "mstorderlostreason" }, { "Sales Stage", "mstsalesstage" }, { "Probability", "mstprobability" } };
             for (int i = 0; i < m.GetLength(0); i++)
             {
                 int off = 0;
@@ -2340,7 +2544,6 @@ namespace eBizWiztoEdifyBiz
         // Check list items of each inquiry, plus the masters the remark needs as NAMES (the client stores codes). - Aftab Alam
         static void LoadChecklists()
         {
-            _probability = SrcLookupInt("SELECT ncode, vname FROM mstprobability WITH (NOLOCK)");
             _checkset = SrcLookupInt("SELECT ncode, vname FROM mstcheckset WITH (NOLOCK)");
             _checkName = SrcLookupInt("SELECT ncode, vname FROM mstchecks WITH (NOLOCK)");
             foreach (DataRow r in GetSrc("SELECT nofficeid, ncode, vtrnprefix, ntrnno, vcampaignname FROM trhcampa WITH (NOLOCK)").Tables[0].Rows)
@@ -2375,12 +2578,14 @@ namespace eBizWiztoEdifyBiz
         static string BuildRemark(SqlDataReader dr)
         {
             List<string> parts = new List<string>();
-            string d1 = Str(dr["vinquirydetails"]); if (!string.IsNullOrWhiteSpace(d1)) parts.Add(d1);
-            string d2 = Str(dr["vremarks"]); if (!string.IsNullOrWhiteSpace(d2)) parts.Add(d2);
+            // vinquirydetails goes to inqcs.additionalinstruction (form field "Inquiry Details"), not into the remark.
+            // The client often typed the same text in Remarks as well - it is already in its own field, so it is not repeated here. - Aftab Alam
+            string inqDetails = Str(dr["vinquirydetails"]);
+            string d2 = Str(dr["vremarks"]);
+            if (!string.IsNullOrWhiteSpace(d2) && !d2.Trim().Equals(inqDetails.Trim(), StringComparison.OrdinalIgnoreCase)) parts.Add(d2);
             string cm = Str(dr["vcomment"]); if (!string.IsNullOrWhiteSpace(cm)) parts.Add("Comment: " + cm);
-            // eBizWiz stores these as master CODES; write the names the client sees on screen. - Aftab Alam
-            string prob = LookInt(_probability, Int(dr["nprobability"])); if (prob.Length > 0) parts.Add("Probability % of Getting The Order: " + prob);
-            string iv = LookInt(_fixed, Int(dr["ninqvalue"])); if (iv.Length > 0 && !iv.Equals("NONE", StringComparison.OrdinalIgnoreCase)) parts.Add("Inquiry Value: " + iv);
+            // Probability % of Getting The Order and Inquiry Value have their own fields now (inqcs.inqprobability /
+            // inqcs.inqvalue), so they are no longer written into the remark. - Aftab Alam
             string camp = LookStr(_campaignName, Int(dr["nofficeid"]) + "|" + Int(dr["ntrhcampa"])); if (Int(dr["ntrhcampa"]) > 0) parts.Add("Campaign: " + (camp.Length > 0 ? camp : "#" + Int(dr["ntrhcampa"])));
             //string cset = LookInt(_checkset, Int(dr["ncheckset"])); if (cset.Length > 0) parts.Add("Check List: " + cset);   // check set -> Checklist Master; items are in the Task Check List tab, not in the remark - Aftab Alam
             List<string> cmp; if (_competitors.TryGetValue(Int(dr["nofficeid"]) + "|" + Int(dr["ncode"]), out cmp)) parts.Add("Competitor: " + string.Join("; ", cmp));
@@ -2399,7 +2604,13 @@ namespace eBizWiztoEdifyBiz
             static Dictionary<string, int> _srcPersonCode = new Dictionary<string, int>();
             static Dictionary<string, int> _remarkByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             static Dictionary<string, int> _priorityMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            static int _cFollow, _cSkippedNoInq, _cErrors, _newRemarks;
+            // followup.status drives the sales person's follow-up screen: the listings in app/followup.asp all filter
+            // on "status.behavior <> 'Completed'", and a NULL status fails that test, so a row without a status is
+            // invisible everywhere. Open inquiries get 'In-Process' (behavior Pending), the rest 'Close'
+            // (behavior Completed) - the row stays as history but is not listed. - Aftab Alam 28/10/2026
+            static readonly HashSet<int> _inqOpenStatus = new HashSet<int>();
+            static object _fupStatusOpen = DBNull.Value, _fupStatusClose = DBNull.Value;
+            static int _cFollow, _cSkippedNoInq, _cErrors, _newRemarks, _cFupOpen;
 
             public static void Migrate(SqlConnection tgt, Dictionary<string, InqTarget> inqByKey)
             {
@@ -2409,6 +2620,7 @@ namespace eBizWiztoEdifyBiz
                 BuildPersonCodes(tgt);
                 BuildFollowupRemarks(tgt);
                 BuildPriorityMap(tgt);
+                BuildFollowupStatus(tgt);
                 SeedInquiryTypes(tgt);
 
                 Console.WriteLine("Maps: inquiries=" + _inqByKey.Count + ", persons=" + _srcPersonCode.Count + ", followupremarks=" + _remarkByName.Count + "(+" + _newRemarks + ")");
@@ -2435,6 +2647,7 @@ namespace eBizWiztoEdifyBiz
 
                 Console.WriteLine("-----------------------------------------------------");
                 Console.WriteLine("  Followups migrated       : " + _cFollow);
+                Console.WriteLine("  Open on follow-up screen : " + _cFupOpen + " (rest kept as 'Close')");
                 Console.WriteLine("  Person from Party Contact: " + _cPersonFromParty);
                 Console.WriteLine("  Skipped (inquiry not found): " + _cSkippedNoInq);
                 Console.WriteLine("  Errors                   : " + _cErrors);
@@ -2484,12 +2697,15 @@ namespace eBizWiztoEdifyBiz
 
                 using (SqlCommand c = new SqlCommand(@"
                     INSERT INTO followup
-                        (ccode, module, modulecode, followType, remarkscode, purpose, priority,
+                        (ccode, module, modulecode, followType, remarkscode, purpose, priority, status,
                          remarks, lastfollowup, nextfollowup, person, pcode, createdby, createdon)
-                    VALUES (@ccode, 'INQ', @mc, @ftype, @rc, @purpose, @prio,
+                    VALUES (@ccode, 'INQ', @mc, @ftype, @rc, @purpose, @prio, @fupstatus,
                             @remarks, @lastf, @nextf, @person, @person, @cb, @con)", tgt))
                 {
                     int _sp;
+                    bool inqOpen = t.Status > 0 && _inqOpenStatus.Contains(t.Status);
+                    if (inqOpen) _cFupOpen++;
+                    c.Parameters.AddWithValue("@fupstatus", inqOpen ? _fupStatusOpen : _fupStatusClose);
                     c.Parameters.AddWithValue("@ccode", ccode);
                     c.Parameters.AddWithValue("@mc", inqcode);
                     c.Parameters.AddWithValue("@ftype", PS(followType));
@@ -2592,6 +2808,20 @@ namespace eBizWiztoEdifyBiz
             {
                 _priorityMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 foreach (DataRow r in GetTgt("SELECT code, name FROM priority WITH (NOLOCK)").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !_priorityMap.ContainsKey(n)) _priorityMap[n] = Int(r["code"]); }
+            }
+
+            static void BuildFollowupStatus(SqlConnection tgt)
+            {
+                _inqOpenStatus.Clear();
+                foreach (DataRow r in GetTgt("SELECT code FROM status WITH (NOLOCK) WHERE module = 'Inquiry' AND name IN ('Open','OPEN - Action Needed by BO')").Tables[0].Rows)
+                    _inqOpenStatus.Add(Int(r["code"]));
+                foreach (DataRow r in GetTgt("SELECT code, name FROM status WITH (NOLOCK) WHERE module = 'Followup' AND name IN ('In-Process','Close')").Tables[0].Rows)
+                {
+                    if (string.Equals(Str(r["name"]), "In-Process", StringComparison.OrdinalIgnoreCase)) _fupStatusOpen = Int(r["code"]);
+                    else _fupStatusClose = Int(r["code"]);
+                }
+                Console.WriteLine("  followup status: open inquiry statuses=" + _inqOpenStatus.Count +
+                                  ", In-Process=" + _fupStatusOpen + ", Close=" + _fupStatusClose);
             }
 
             static void SeedInquiryTypes(SqlConnection tgt)
@@ -2745,6 +2975,8 @@ namespace eBizWiztoEdifyBiz
             int cu; m.Currency = _currencyMap.TryGetValue(Int(dr["ncurrency"]), out cu) ? (object)cu : DBNull.Value;
             int ex; m.Executive = UserByCode.TryGetValue(NKey(dr["nsalesman"]), out ex) ? (object)ex : MigrationUser;
             m.ExchangeRate = dr["nexchangerate"] != DBNull.Value ? dr["nexchangerate"] : DBNull.Value;
+            // saksham: Quotation For - the client Quote Type says Sales or Service. - Aftab Alam
+            m.QuotationFor = LookInt(_fixed, Int(dr["nquotetype"])).ToUpperInvariant().Contains("SERVICE") ? "Service" : "Sales";
             m.EnqRefNo = Cap(Str(dr["vrefno"]), 200);
             m.EnqRefDate = P(dr["drefdate"]);
             m.Createdon = P(dr["addedon"]);
@@ -2836,11 +3068,11 @@ namespace eBizWiztoEdifyBiz
                         INSERT INTO inqcs
                             (cors, inqref, inqdate, followupdate, cscode, csbranch, cperson, executive, status, Category,
                              quotetype, lossreason, currency, exchangerate, inqlink, enqrefno, enqrefdate,
-                             comcode, branchcode, remark, terms, approvalstatus, createdby, updatedby, createdon, updatedon)
+                             comcode, branchcode, remark, terms, modulename, approvalstatus, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
                         VALUES (@cors, @inqref, @inqdate, @followupdate, @cscode, @csbranch, @cperson, @exec, @status, @cat,
                                 @quotetype, @lossreason, @currency, @exrate, @inqlink, @enqrefno, @enqrefdate,
-                                @com, @branch, @remark, @terms, 'Approved', @cb, @cb, @con, @uon)";
+                                @com, @branch, @remark, @terms, @quotfor, 'Approved', @cb, @cb, @con, @uon)";
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
                     {
                         c.Parameters.AddWithValue("@cors", Cors);
@@ -2853,6 +3085,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@exec", m.Executive);
                         c.Parameters.AddWithValue("@status", status);
                         c.Parameters.AddWithValue("@cat", category);
+                        c.Parameters.AddWithValue("@quotfor", PS(m.QuotationFor));
                         c.Parameters.AddWithValue("@quotetype", m.QuoteType);
                         c.Parameters.AddWithValue("@lossreason", m.LossReason);
                         c.Parameters.AddWithValue("@currency", m.Currency);
@@ -3220,6 +3453,9 @@ namespace eBizWiztoEdifyBiz
             public object Executive = MigrationUser, InqLink = DBNull.Value, QuoteType = DBNull.Value, LossReason = DBNull.Value,
                           Currency = DBNull.Value, ExchangeRate = DBNull.Value, EnqRefDate = DBNull.Value;
             public string EnqRefNo = "", Remark = "", Terms = "";
+            // saksham: Quotation For (inqcs.modulename) - "Sales" or "Service", from the client Quote Type.
+            // It drives the Sales / Service quotation tabs. - Aftab Alam
+            public string QuotationFor = "";
         }
     }
 
@@ -3233,9 +3469,10 @@ namespace eBizWiztoEdifyBiz
     {
         const string Cors = "SO";
 
-        static Dictionary<int, string> _fixed, _inqCategory, _officeName, _pendReason;
+        static Dictionary<int, string> _fixed, _inqCategory, _officeName, _pendReason, _inqSource;
         static readonly Dictionary<int, int> _mapStatus = new Dictionary<int, int>();
         static readonly Dictionary<int, int> _mapCategory = new Dictionary<int, int>();
+        static readonly Dictionary<int, int> _mapPendReason = new Dictionary<int, int>();
         static readonly Dictionary<int, int> _currencyMap = new Dictionary<int, int>();
         static readonly Dictionary<string, int> _custByParty = new Dictionary<string, int>();
         static readonly Dictionary<int, int> _branchByContact = new Dictionary<int, int>();
@@ -3257,7 +3494,7 @@ namespace eBizWiztoEdifyBiz
         static readonly Dictionary<string, DateTime> _despDateByOrder = new Dictionary<string, DateTime>();   // office|trhordrc ncode -> despatch date
         static Dictionary<int, string> _checkset, _payTermName;
         static int _cPayTermDocs, _cExpenseDocs, _billToOwn, _cDespDates;
-        static int _cRows, _cDet, _cDetSkipped, _cErrors, _custResolved, _custUnresolved, _newStatus, _newCategory, _quoteLinked, _cChecklist;
+        static int _cRows, _cDet, _cDetSkipped, _cErrors, _custResolved, _custUnresolved, _newStatus, _newCategory, _newPend, _quoteLinked, _cChecklist;
         static readonly Dictionary<string, decimal> _itemsAllByKey = new Dictionary<string, decimal>();   // office|order -> sum(qty x nrate) of ALL lines
         static readonly Dictionary<string, decimal> _lineTaxByKey = new Dictionary<string, decimal>();    // office|order -> sum(line ntaxamt)
         static Dictionary<string, List<object[]>> _chargesByKey;
@@ -3278,6 +3515,7 @@ namespace eBizWiztoEdifyBiz
                 EnsureStatuses(tgt);
                 SeedCategories(tgt);
                 SeedOrderType(tgt);
+                SeedPendingReasons(tgt);
                 BuildCurrencyMap(tgt);
                 BuildCustomerMap(tgt);
                 BuildBranchByContact(tgt);
@@ -3294,6 +3532,7 @@ namespace eBizWiztoEdifyBiz
                 LoadPayTermsAndExpenses();
 
                 Console.WriteLine("Maps: status=" + _mapStatus.Count + "(+" + _newStatus + "), category=" + _mapCategory.Count + "(+" + _newCategory +
+                                  "), pendreason=" + _mapPendReason.Count + "(+" + _newPend +
                                   "), currency=" + _currencyMap.Count + ", customers=" + _custByParty.Count + ", products=" + _prodByItem.Count +
                                   ", persons=" + _persons.Count + ", hdrWithProducts=" + _hdrProductsByKey.Count + ", cqRows=" + _cqByKey.Count);
                 Console.WriteLine("-----------------------------------------------------");
@@ -3368,7 +3607,8 @@ namespace eBizWiztoEdifyBiz
             m.StatusCode = Int(dr["nordrecdstatus"]);
             m.CategoryCode = Int(dr["ninquirycategory"]);
             m.OrderType = LookInt(_fixed, Int(dr["nordrecdtype"]));
-            m.Sources = LookInt(_fixed, Int(dr["nordsource"]));
+            m.Sources = LookInt(_inqSource, Int(dr["nordsource"]));
+            int pr; m.PendingReason = _mapPendReason.TryGetValue(Int(dr["npendingreason"]), out pr) ? (object)pr : DBNull.Value;
             int cu; m.Currency = _currencyMap.TryGetValue(Int(dr["ncurrency"]), out cu) ? (object)cu : DBNull.Value;
             int ex; m.Executive = UserByCode.TryGetValue(NKey(dr["nsalesman"]), out ex) ? (object)ex : MigrationUser;
             m.ExchangeRate = dr["nexchangerate"] != DBNull.Value ? dr["nexchangerate"] : DBNull.Value;
@@ -3393,8 +3633,7 @@ namespace eBizWiztoEdifyBiz
             List<string> parts = new List<string>();
             string rem = Str(dr["vremarks"]); if (!string.IsNullOrWhiteSpace(rem)) parts.Add(rem);
             string cm = Str(dr["vcomment"]); if (!string.IsNullOrWhiteSpace(cm)) parts.Add("Comment: " + cm);
-            //string pr = LookInt(_fixed, Int(dr["npendingreason"])); if (!string.IsNullOrWhiteSpace(pr)) parts.Add("Pending Reason: " + pr);
-            string pr = LookInt(_pendReason, Int(dr["npendingreason"])); if (!string.IsNullOrWhiteSpace(pr)) parts.Add("Pending Reason: " + pr);
+            // Pending Reason now has its own column (inqcs.pendingreason) - no longer appended to the remark. - Aftab Alam
             //string an = Str(dr["vordacknno"]); if (!string.IsNullOrWhiteSpace(an)) parts.Add("Order Ackn No: " + an);   // -> inqcs.sono (Principal SO Number) - Aftab Alam
             if (dr["dackndate"] != DBNull.Value) parts.Add("Order Ackn Date: " + Convert.ToDateTime(dr["dackndate"]).ToString("dd/MM/yyyy"));
             // Check List set (the template name; the items go to the Task Check List) and the order expenses grid. - Aftab Alam
@@ -3486,11 +3725,11 @@ namespace eBizWiztoEdifyBiz
                         INSERT INTO inqcs
                             (cors, inqref, inqdate, cscode, csbranch, cperson, executive, status, Category,
                              ordertype, sources, currency, exchangerate, ponumber, podate, shippingbranch,
-                             inqlink, inqcode, terms, customertentativedate, comcode, branchcode, remark, approvalstatus, sono, createdby, updatedby, createdon, updatedon)
+                             inqlink, inqcode, terms, customertentativedate, comcode, branchcode, remark, approvalstatus, sono, pendingreason, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
                         VALUES (@cors, @inqref, @inqdate, @cscode, @csbranch, @cperson, @exec, @status, @cat,
                                 @ordertype, @sources, @currency, @exrate, @pono, @podate, @shipbranch,
-                                @inqlink, @inqcode, @terms, @custdate, @com, @branch, @remark, '', @sono, @cb, @ub, @con, @uon)";
+                                @inqlink, @inqcode, @terms, @custdate, @com, @branch, @remark, '', @sono, @pendreason, @cb, @ub, @con, @uon)";
                     // approvalstatus '' = what the app posts on every save; the column default is 'Pending'. The client's order
                     // screen has no approval step (bapproval = 1 on all 7,658 orders). - Aftab Alam
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
@@ -3521,6 +3760,7 @@ namespace eBizWiztoEdifyBiz
                         //c.Parameters.AddWithValue("@cb", MigrationUser);
                         c.Parameters.AddWithValue("@cb", m.Createdby); c.Parameters.AddWithValue("@ub", m.Updatedby);   // eBizWiz addedby / editedby - Aftab Alam
                         c.Parameters.AddWithValue("@sono", m.Sono);
+                        c.Parameters.AddWithValue("@pendreason", m.PendingReason);
                         c.Parameters.AddWithValue("@con", m.Createdon);
                         c.Parameters.AddWithValue("@uon", m.Updatedon);
                         code = Convert.ToInt32(c.ExecuteScalar());
@@ -3640,6 +3880,9 @@ namespace eBizWiztoEdifyBiz
             // Order Received Pending Reason is a mstcallpendingreasons code (same master as Purchase Order and
             // Complaint), NOT mstfixedselection - from _fixed it came out as sales-stage words like WARM. - Aftab Alam
             _pendReason = SrcLookupInt("SELECT ncode, vname FROM mstcallpendingreasons WITH (NOLOCK)");
+            // nordsource is a mstinquirysource code, NOT mstfixedselection - from _fixed it came out as
+            // unrelated words like SEMI-COMPREHENSIVE (TYPE 3) / COLD / HOT. - Aftab Alam
+            _inqSource = SrcLookupInt("SELECT ncode, vname FROM mstinquirysource WITH (NOLOCK)");
             _inqCategory = SrcLookupInt("SELECT ncode, vname FROM mstinquirycategory WITH (NOLOCK)");
             _officeName = SrcLookupInt("SELECT ncode, vcompanyname FROM mstoffice WITH (NOLOCK)");
         }
@@ -3712,6 +3955,30 @@ namespace eBizWiztoEdifyBiz
                 if (n.Length == 0 || tmap.ContainsKey(n)) continue;
                 using (SqlCommand ins = new SqlCommand("INSERT INTO miscellaneous (module, type, name, active, makedefault, createdby, createdon, updatedby, updatedon) OUTPUT INSERTED.code VALUES ('Inquiry','Order Type', @n, 1, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
                 { ins.Parameters.AddWithValue("@n", n); ins.Parameters.AddWithValue("@cb", MigrationUser); tmap[n] = Convert.ToInt32(ins.ExecuteScalar()); }
+            }
+        }
+
+        // Pending Reason -> miscellaneous(Purchase Order/Pending Reason); same master and same lookup the
+        // Purchase Order module seeds, so an order and a purchase share one list. - Aftab Alam
+        static void SeedPendingReasons(SqlConnection tgt)
+        {
+            Dictionary<string, int> tmap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT code, name FROM miscellaneous WHERE module='Purchase Order' AND type='Pending Reason'").Tables[0].Rows) { string n = Str(r["name"]); if (n.Length > 0 && !tmap.ContainsKey(n)) tmap[n] = Int(r["code"]); }
+
+            foreach (DataRow row in GetSrc("SELECT DISTINCT npendingreason FROM trhordrc WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND npendingreason IS NOT NULL AND npendingreason > 0").Tables[0].Rows)
+            {
+                int scode = Int(row[0]);
+                string nm = LookInt(_pendReason, scode);
+                if (nm.Length == 0) continue;
+                nm = Cap(nm, 200);
+                int tc;
+                if (!tmap.TryGetValue(nm, out tc))
+                {
+                    using (SqlCommand ins = new SqlCommand("INSERT INTO miscellaneous (module, type, name, active, makedefault, createdby, createdon, updatedby, updatedon) OUTPUT INSERTED.code VALUES ('Purchase Order','Pending Reason', @n, 1, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                    { ins.Parameters.AddWithValue("@n", nm); ins.Parameters.AddWithValue("@cb", MigrationUser); tc = Convert.ToInt32(ins.ExecuteScalar()); }
+                    tmap[nm] = tc; _newPend++;
+                }
+                _mapPendReason[scode] = tc;
             }
         }
 
@@ -3905,7 +4172,7 @@ namespace eBizWiztoEdifyBiz
             public int SourceCode, Office, PersonNo, PersonNo2, StatusCode, CategoryCode;
             public string Inqref = "", PartyKey = "", OrderType = "", Sources = "", Ponumber = "", Remark = "", Terms = "";
             public object Executive = MigrationUser;
-            public object Createdby = MigrationUser, Updatedby = MigrationUser, Sono = DBNull.Value;
+            public object Createdby = MigrationUser, Updatedby = MigrationUser, Sono = DBNull.Value, PendingReason = DBNull.Value;
             public object Inqdate = DBNull.Value, Podate = DBNull.Value, Createdon = DBNull.Value, Updatedon = DBNull.Value,
                           Currency = DBNull.Value, ExchangeRate = DBNull.Value, InqLink = DBNull.Value, InqCode = DBNull.Value,
                           BuyerBranch = DBNull.Value, ShippingBranch = DBNull.Value, CustomerDeliveryDate = DBNull.Value;
@@ -3936,7 +4203,8 @@ namespace eBizWiztoEdifyBiz
         static readonly Dictionary<string, int> _soLineToHdr = new Dictionary<string, int>();               // office|SO line ncode -> SO header ncode
         static readonly Dictionary<string, string> _soRefByOfficeHdr = new Dictionary<string, string>();    // office|SO header ncode -> inqref
         static readonly Dictionary<string, int> _soCodeByKey = new Dictionary<string, int>();               // branch|inqref -> inqcs.code (cors='SO')
-        static int _cRows, _cDet, _cDetSkipped, _cErrors, _supResolved, _supUnresolved, _newStatus, _newCategory, _newPend, _soLinked;
+        static readonly Dictionary<string, DateTime> _delDateByOrder = new Dictionary<string, DateTime>();   // office|PO ncode -> delivery date (trdordpl2deldate)
+        static int _cRows, _cDet, _cDetSkipped, _cErrors, _supResolved, _supUnresolved, _newStatus, _newCategory, _newPend, _soLinked, _cDelDates;
         static Dictionary<int, int> _batchByProd = new Dictionary<int, int>();   // product -> Default Batch - Aftab Alam
         // Check list (trdordpl5checks), Payment Terms (trdordpl3payterms), post-tax charges (trdordpl4posttaxchgs), line remarks. - Aftab Alam
         static Dictionary<int, string> _checkName, _checkset, _termset, _payTermName;
@@ -4009,6 +4277,7 @@ namespace eBizWiztoEdifyBiz
                 Console.WriteLine("  Check list items         : " + _cChecklist + "  (taskchecklist, module='PUR')");
                 Console.WriteLine("  Payment terms            : " + _cPayTermDocs + " POs (pur_order.term) | charges in remarks: " + _cChargeDocs + " | line remarks: " + _cLineRemarks);
                 Console.WriteLine("  Commission in remarks    : requested " + _cCommReq + ", received " + _cCommRec);
+                Console.WriteLine("  Delivery date set        : " + _cDelDates + " POs (line schedule, header Dispatch Date as fallback)");
                 Console.WriteLine("  Errors                   : " + _cErrors);
                 Console.WriteLine("-----------------------------------------------------");
             }
@@ -4027,7 +4296,9 @@ namespace eBizWiztoEdifyBiz
 
             int cu; object currency = _currencyMap.TryGetValue(Int(dr["ncurrency"]), out cu) ? (object)cu : DBNull.Value;
             object discount = dr["nprindiscountperc"] != DBNull.Value ? dr["nprindiscountperc"] : DBNull.Value;
-            object deliverydate = P(dr["dprindispatchdate"]);
+            DateTime dd;
+            object deliverydate = _delDateByOrder.TryGetValue(office + "|" + srcCode, out dd) ? (object)dd : P(dr["dprindispatchdate"]);
+            if (deliverydate != DBNull.Value) _cDelDates++;
             object paynotes = PS(Str(dr["vtermsconditions"]));
             object remarks = PS(BuildRemark(dr));
             object term = PS(BuildTerm(dr));   // Payment Terms grid + Terms & Cond. set name -> "Terms" field - Aftab Alam
@@ -4123,9 +4394,14 @@ namespace eBizWiztoEdifyBiz
                                 d.Parameters.AddWithValue("@prod", pcode);
                                 d.Parameters.AddWithValue("@batch", lineBatch);
                                 d.Parameters.AddWithValue("@q", p[1]);
-                                d.Parameters.AddWithValue("@pr", p[2] == 0 ? (object)DBNull.Value : p[2]);
-                                // eBizWiz nrate is already net of the line discount (1,178 of 1,179 discounted lines) -> no discount again. - Aftab Alam
-                                d.Parameters.AddWithValue("@disc", DBNull.Value);
+                                // eBizWiz nrate is already net of ndiscountperc -> price = master rate, discount = the line total
+                                // difference (pur_order_det.discount is a LINE amount: sum((qty x price) - discount)), so the net
+                                // stays qty x nrate. Same split as Quotation / Sales Order. - Aftab Alam
+                                object linePrice, lineDisc = DBNull.Value;
+                                if (p[6] != 0 && p[7] > p[2]) { linePrice = p[7]; lineDisc = Math.Round((p[7] - p[2]) * p[1], 2); }
+                                else linePrice = p[2] == 0 ? (object)DBNull.Value : p[2];
+                                d.Parameters.AddWithValue("@pr", linePrice);
+                                d.Parameters.AddWithValue("@disc", lineDisc);
                                 d.Parameters.AddWithValue("@cur", lineCur);
                                 d.Parameters.AddWithValue("@cb", MigrationUser);
                                 d.Parameters.AddWithValue("@con", createdon);
@@ -4208,6 +4484,7 @@ namespace eBizWiztoEdifyBiz
             //string cset = LookInt(_checkset, Int(dr["ncheckset"])); if (cset.Length > 0) parts.Add("Check List: " + cset);   // check set -> Checklist Master; items are in the Task Check List tab, not in the remark - Aftab Alam
             AddCommission(parts, "Commission Requested", dr["nprincommreq"], dr["nprinreqcurrency"]);
             AddCommission(parts, "Commission Received", dr["nprincommrec"], dr["nprinreccurrency"]);
+            if (dr["dprindispatchdate"] != DBNull.Value) parts.Add("Dispatch Date: " + Convert.ToDateTime(dr["dprindispatchdate"]).ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
             if (dr["dprininstdate"] != DBNull.Value) parts.Add("Installation Date: " + Convert.ToDateTime(dr["dprininstdate"]).ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
             AddAmt(parts, "OR Value Payment Received %", dr["nprinorpayrecdperc"]);
             AddAmt(parts, "OR Value Payment Received Amt", dr["nprinorpayrecdamt"]);
@@ -4254,6 +4531,11 @@ namespace eBizWiztoEdifyBiz
             _termset = SrcLookupInt("SELECT ncode, vname FROM msttermset WITH (NOLOCK)");
             _payTermName = SrcLookupInt("SELECT ncode, vname FROM mstpaymentterms WITH (NOLOCK)");
             _srcCurrencyName = SrcLookupInt("SELECT ncode, vmajorshortname FROM mstcurrency WITH (NOLOCK)");
+            // Delivery date: eBizWiz keeps one row per PO line, and all lines of a PO carry the same date (5,896 of 5,897 POs),
+            // while the header Dispatch Date is filled on only 250 of 6,031 POs and is a different field (principal dispatch,
+            // never equal to the line delivery date). Our PO has one header Delivery Date -> one date per order. - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT nofficeid, nordpl, MIN(ddeldate) AS dt FROM trdordpl2deldate WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ddeldate IS NOT NULL GROUP BY nofficeid, nordpl").Tables[0].Rows)
+                _delDateByOrder[Int(r["nofficeid"]) + "|" + Int(r["nordpl"])] = Convert.ToDateTime(r["dt"]);
             int n = 0, p = 0, c = 0;
             foreach (DataRow r in GetSrc("SELECT nofficeid, nordpl, ncheck, dexpdate, bdone, ddonedate, nallotedto, vremarks, addedon, editedon FROM trdordpl5checks WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, nordpl, ncode").Tables[0].Rows)
             {
@@ -4461,8 +4743,8 @@ namespace eBizWiztoEdifyBiz
         {
             // All lines are read: the Sales Order link (nordrcditemdetailncode) is kept even on a blank-item line
             // (e.g. PO OP1606 links OR2128/OR2129 only via item-less lines); products are added only when nitem > 0. - Aftab Alam
-            // decimal[] = { item, qty, nrate, ndiscount, currency, line ncode } - line ncode carries the line remarks. - Aftab Alam
-            foreach (DataRow r in GetSrc("SELECT nofficeid, nordpl, nitem, nquantity, nrate, ndiscount, nitemcurrency, nordrcditemdetailncode, ncode FROM trdordpl1items WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, nordpl, ncode").Tables[0].Rows)
+            // decimal[] = { item, qty, nrate, ndiscount, currency, line ncode, ndiscountperc, nmasterrate } - line ncode carries the line remarks. - Aftab Alam
+            foreach (DataRow r in GetSrc("SELECT nofficeid, nordpl, nitem, nquantity, nrate, ndiscount, nitemcurrency, nordrcditemdetailncode, ncode, nmasterrate, ndiscountperc FROM trdordpl1items WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, nordpl, ncode").Tables[0].Rows)
             {
                 int office = Int(r[0]);
                 int hdr = Int(r[1]); if (hdr <= 0) continue;
@@ -4473,7 +4755,7 @@ namespace eBizWiztoEdifyBiz
                 {
                     List<decimal[]> list;
                     if (!_hdrProductsByKey.TryGetValue(key, out list)) { list = new List<decimal[]>(); _hdrProductsByKey[key] = list; }
-                    list.Add(new decimal[] { item, Dec(r[3]), Dec(r[4]), Dec(r[5]), Int(r[6]), Int(r[8]) });
+                    list.Add(new decimal[] { item, Dec(r[3]), Dec(r[4]), Dec(r[5]), Int(r[6]), Int(r[8]), Dec(r[10]), Dec(r[9]) });
                 }
 
                 int detnc = Int(r[7]);
@@ -5953,6 +6235,12 @@ namespace eBizWiztoEdifyBiz
         static Dictionary<string, List<object[]>> _chargesByKey;
         static readonly Dictionary<string, List<string>> _schedBills = new Dictionary<string, List<string>>();   // office|offer -> "dd/MM/yyyy = amount" (trdoffer5tempbills)
         static readonly Dictionary<int, int> _mapQuoteType = new Dictionary<int, int>();
+        // saksham: the AMC Quotation fields now have their own columns on the quotation (00_db_alters). - Aftab Alam
+        static readonly Dictionary<int, int> _mapOfferType = new Dictionary<int, int>();
+        static readonly Dictionary<int, int> _mapPaySched = new Dictionary<int, int>();
+        static readonly Dictionary<int, int> _mapConversion = new Dictionary<int, int>();
+        static readonly Dictionary<int, int> _mapOfferIs = new Dictionary<int, int>();
+        static readonly Dictionary<int, int> _mapContrType = new Dictionary<int, int>();
         static readonly Dictionary<string, int> _statusByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         static int _inrCode;
         static int _rows, _lines, _skipLines, _errors, _adj, _checks, _docGst, _lineDisc;
@@ -5980,6 +6268,11 @@ namespace eBizWiztoEdifyBiz
                 BuildMaps(tgt);
                 EnsureUserByCode();
                 SeedQuoteTypes(tgt);
+                SeedAmcMisc(tgt, "Offer Type", "SELECT ncode, vdisplayvalue FROM mstfixedselection WITH (NOLOCK) WHERE vpagename='amcitem.aspx' AND vfieldname='noffertype'", _mapOfferType);
+                SeedAmcMisc(tgt, "Conversion", "SELECT ncode, vdisplayvalue FROM mstfixedselection WITH (NOLOCK) WHERE vpagename='amcitem.aspx' AND vfieldname='nconversion'", _mapConversion);
+                SeedAmcMisc(tgt, "Offer Is", "SELECT ncode, vdisplayvalue FROM mstfixedselection WITH (NOLOCK) WHERE vpagename='amcitem.aspx' AND vfieldname='nofferis'", _mapOfferIs);
+                SeedAmcMisc(tgt, "AMC Contract Type", "SELECT ncode, vdisplayvalue FROM mstfixedselection WITH (NOLOCK) WHERE vpagename='contractsrno.aspx' AND vfieldname='ncontrtype'", _mapContrType);
+                SeedAmcMisc(tgt, "Payment Schedule", "SELECT ncode, vname FROM mstpaymentschedule WITH (NOLOCK)", _mapPaySched);
                 EnsureStatuses(tgt);
                 LoadSource();
                 _chargesByKey = LoadPostTaxCharges("trdoffer3posttaxchgs", "noffer");
@@ -6066,10 +6359,17 @@ namespace eBizWiztoEdifyBiz
                     int code;
                     using (SqlCommand c = new SqlCommand(@"INSERT INTO inqcs
                             (cors, inqref, inqdate, followupdate, cscode, csbranch, cperson, executive, status, quotetype, currency,
-                             enqrefno, enqrefdate, terms, modulename, approvalstatus, comcode, branchcode, remark, createdby, updatedby, createdon, updatedon)
+                             enqrefno, enqrefdate, terms, modulename, approvalstatus, comcode, branchcode, remark,
+                             offertype, paymentschedule, begorend, conversion, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
-                        VALUES ('CQ', @ref, @dt, @fu, @cs, @csb, @cp, @ex, @st, @qt, @cur, @rno, @rdt, @terms, 'AMC Contract', 'Approved', @com, @br, @rem, @cb, @ub, @con, @uon)", tgt, tx))
+                        VALUES ('CQ', @ref, @dt, @fu, @cs, @csb, @cp, @ex, @st, @qt, @cur, @rno, @rdt, @terms, 'AMC Contract', 'Approved', @com, @br, @rem,
+                                @offertype, @paysched, @begorend, @conversion, @cb, @ub, @con, @uon)", tgt, tx))
                     {
+                        // saksham: AMC Quotation header fields - own columns now, no longer only in the remark. - Aftab Alam
+                        int _ot; c.Parameters.AddWithValue("@offertype", _mapOfferType.TryGetValue(Int(h["noffertype"]), out _ot) ? (object)_ot : DBNull.Value);
+                        int _ps; c.Parameters.AddWithValue("@paysched", _mapPaySched.TryGetValue(Int(h["npaymentschedule"]), out _ps) ? (object)_ps : DBNull.Value);
+                        c.Parameters.AddWithValue("@begorend", PS(Cap(Str(h["vbegorend"]).Trim(), 20)));
+                        int _cv; c.Parameters.AddWithValue("@conversion", _mapConversion.TryGetValue(Int(h["nconversion"]), out _cv) ? (object)_cv : DBNull.Value);
                         c.Parameters.AddWithValue("@ref", PS((Str(h["vtrnprefix"]) + Str(h["ntrnno"])).Trim()));
                         c.Parameters.AddWithValue("@dt", P(h["dtrndate"]));
                         c.Parameters.AddWithValue("@fu", P(h["dfollowupdate"]));
@@ -6105,8 +6405,10 @@ namespace eBizWiztoEdifyBiz
                             string prev = PrevDoc(office, offeris, (int)it[4]);
                             if (srs == null || srs.Count == 0)
                             {
+                                int _oi0; object offerIs0 = _mapOfferIs.TryGetValue((int)it[3], out _oi0) ? (object)_oi0 : DBNull.Value;
                                 InsertLine(tgt, tx, code, pcode, (decimal)it[2], DBNull.Value, DBNull.Value, DBNull.Value, DBNull.Value, DBNull.Value, DBNull.Value,
-                                           string.Join("<br/>", new[] { offeris, prev }.Where(x => x.Length > 0)), createdon, updatedon);
+                                           prev, createdon, updatedon,
+                                           offerIs0, DBNull.Value, DBNull.Value, DBNull.Value, DBNull.Value, DBNull.Value);
                                 lineN++; continue;
                             }
                             foreach (object[] s in srs)
@@ -6118,7 +6420,13 @@ namespace eBizWiztoEdifyBiz
                                 decimal lr = gstRate; string tsn;
                                 if (lr <= 0 && (int)s[6] > 0 && (decimal)s[7] != 0 && _taxsetName.TryGetValue((int)s[6], out tsn)) lr = GstRateIn(tsn);
                                 string pdesc = SerialText(office, s, offeris, prev);
-                                InsertLine(tgt, tx, code, pcode, 1m, price, disc, dp, lr > 0 ? (object)lr : DBNull.Value, PS(Cap((string)s[0], 50)), PS(Cap((string)s[1], 255)), pdesc, createdon, updatedon);
+                                // serial array: 2 contrtype, 8 start, 9 end, 12 months, 13 pm visits (see LoadSource). - Aftab Alam
+                                int _oi; object lineOfferIs = _mapOfferIs.TryGetValue((int)it[3], out _oi) ? (object)_oi : DBNull.Value;
+                                int _ct; object lineAmcType = _mapContrType.TryGetValue((int)s[2], out _ct) ? (object)_ct : DBNull.Value;
+                                object lineMonths = (int)s[12] > 0 ? (object)(int)s[12] : DBNull.Value;
+                                object linePm = (int)s[13] > 0 ? (object)(int)s[13] : DBNull.Value;
+                                InsertLine(tgt, tx, code, pcode, 1m, price, disc, dp, lr > 0 ? (object)lr : DBNull.Value, PS(Cap((string)s[0], 50)), PS(Cap((string)s[1], 255)), pdesc, createdon, updatedon,
+                                           lineOfferIs, s[8], s[9], lineMonths, lineAmcType, linePm);
                                 migratedValue += rate; lineN++;
                             }
                         }
@@ -6170,10 +6478,13 @@ namespace eBizWiztoEdifyBiz
             }
         }
 
-        static void InsertLine(SqlConnection tgt, SqlTransaction tx, int inqcode, int pcode, decimal qty, object price, object disc, object dpct, object tax, object srno, object location, string pdesc, object con, object uon)
+        static void InsertLine(SqlConnection tgt, SqlTransaction tx, int inqcode, int pcode, decimal qty, object price, object disc, object dpct, object tax, object srno, object location, string pdesc, object con, object uon,
+                               object offeris, object amcstart, object amcend, object amcmonths, object amctype, object amcpm)
         {
-            using (SqlCommand d = new SqlCommand(@"INSERT INTO inqcsdet (inqcode, pcode, quantity, price, discount, discountpercent, prodtax, prodsrno, location, pdesc, currency, createdby, updatedby, createdon, updatedon)
-                                                 VALUES (@i, @p, @q, @pr, @disc, @dp, @tax, @sr, @loc, @pd, @cur, @cb, @cb, @con, @uon)", tgt, tx))
+            using (SqlCommand d = new SqlCommand(@"INSERT INTO inqcsdet (inqcode, pcode, quantity, price, discount, discountpercent, prodtax, prodsrno, location, pdesc, currency,
+                                                  offeris, amcstartdate, amcenddate, amcmonths, amccontracttype, amcpmvisits, createdby, updatedby, createdon, updatedon)
+                                                 VALUES (@i, @p, @q, @pr, @disc, @dp, @tax, @sr, @loc, @pd, @cur,
+                                                  @offeris, @amcstart, @amcend, @amcmonths, @amctype, @amcpm, @cb, @cb, @con, @uon)", tgt, tx))
             {
                 d.Parameters.AddWithValue("@i", inqcode);
                 d.Parameters.AddWithValue("@p", pcode);
@@ -6185,6 +6496,13 @@ namespace eBizWiztoEdifyBiz
                 d.Parameters.AddWithValue("@sr", srno);
                 d.Parameters.AddWithValue("@loc", location);
                 d.Parameters.AddWithValue("@pd", PS(pdesc));
+                // saksham: AMC Quotation line fields - own columns now. - Aftab Alam
+                d.Parameters.AddWithValue("@offeris", offeris);
+                d.Parameters.AddWithValue("@amcstart", amcstart);
+                d.Parameters.AddWithValue("@amcend", amcend);
+                d.Parameters.AddWithValue("@amcmonths", amcmonths);
+                d.Parameters.AddWithValue("@amctype", amctype);
+                d.Parameters.AddWithValue("@amcpm", amcpm);
                 d.Parameters.AddWithValue("@cur", _inrCode > 0 ? (object)_inrCode : DBNull.Value);
                 d.Parameters.AddWithValue("@cb", MigrationUser);
                 d.Parameters.AddWithValue("@con", con);
@@ -6199,13 +6517,11 @@ namespace eBizWiztoEdifyBiz
             List<string> p = new List<string>();
             if (((string)s[0]).Length > 0) p.Add("S/N: " + (string)s[0]);
             if (((string)s[1]).Length > 0) p.Add("Location: " + (string)s[1]);
-            string ct = LookInt(_fixed, (int)s[2]); if (ct.Length > 0) p.Add("Contract Type: " + ct);
-            string period = Dt(s[8]) + (s[9] != DBNull.Value ? " - " + Dt(s[9]) : "") + ((int)s[12] > 0 ? " (" + (int)s[12] + " months)" : "");
-            if (period.Trim().Length > 0) p.Add("Period: " + period.Trim());
-            if ((int)s[13] > 0) p.Add("PM Visits: " + (int)s[13]);
+            // Contract Type, Period (start/end/months), PM Visits and Offer Is now have their own line columns
+            // (inqcsdet amccontracttype / amcstartdate / amcenddate / amcmonths / amcpmvisits / offeris),
+            // so they are no longer repeated here. - Aftab Alam
             if (s[14] != DBNull.Value) p.Add("Old End Date: " + Dt(s[14]));
             if (s.Length > 15 && s[15] != DBNull.Value) p.Add("First Installed: " + Dt(s[15]));   // dfirstinstdate (6,343 serials) - no install field on a quotation line - Aftab Alam
-            if (offeris.Length > 0) p.Add(offeris);
             if (prev.Length > 0) p.Add(prev);
             string cn; if ((int)s[10] > 0) p.Add("Contract: " + (_contrNo.TryGetValue(office + "|" + (int)s[10], out cn) ? cn : "#" + (int)s[10]));
             else if ((bool)s[11]) p.Add("Closed");
@@ -6255,6 +6571,30 @@ namespace eBizWiztoEdifyBiz
                 n++;
             }
             Console.WriteLine("  Source: product lines for " + _itemsByKey.Count + " quotations, serial groups " + _serialsByLine.Count + ", check items " + n);
+        }
+
+        // saksham: seed one miscellaneous(Inquiry/<type>) list from a source master and map source code -> our code.
+        // Same shape as SeedQuoteTypes below. - Aftab Alam
+        static void SeedAmcMisc(SqlConnection tgt, string type, string srcSql, Dictionary<int, int> map)
+        {
+            Dictionary<string, int> have = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT code, name FROM miscellaneous WHERE module='Inquiry' AND type='" + type + "'").Tables[0].Rows)
+            { string nm = Str(r["name"]).Trim(); if (nm.Length > 0 && !have.ContainsKey(nm)) have[nm] = Int(r["code"]); }
+
+            int added = 0;
+            foreach (DataRow r in GetSrc(srcSql).Tables[0].Rows)
+            {
+                string nm = Str(r[1]).Trim(); if (nm.Length == 0) continue;
+                int c;
+                if (!have.TryGetValue(nm, out c))
+                {
+                    using (SqlCommand ins = new SqlCommand("INSERT INTO miscellaneous (module, type, name, active, makedefault, createdby, createdon, updatedby, updatedon) OUTPUT INSERTED.code VALUES ('Inquiry', @t, @n, 1, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                    { ins.Parameters.AddWithValue("@t", type); ins.Parameters.AddWithValue("@n", nm); ins.Parameters.AddWithValue("@cb", MigrationUser); c = Convert.ToInt32(ins.ExecuteScalar()); }
+                    have[nm] = c; added++;
+                }
+                map[Int(r[0])] = c;
+            }
+            Console.WriteLine("  miscellaneous(Inquiry/" + type + "): " + map.Count + " mapped (+" + added + " new)");
         }
 
         // Quote Type master (miscellaneous Inquiry/Quote Type, already used by saksham CQ): full noffertype group as "AMC - <name>".
@@ -8347,7 +8687,6 @@ namespace eBizWiztoEdifyBiz
             {
                 BuildMaps(tgt);
                 EnsureCompanyBanks(tgt);
-                ClearPrevious(tgt);
                 LoadSource();
                 Console.WriteLine("Maps: customers=" + _custByParty.Count + ", invoices=" + _invBySrc.Count + ", contract bills=" + _billBySrc.Count +
                                   ", complaints=" + _callNo.Count + ", company banks=" + _bankByMst.Count);
@@ -8507,17 +8846,6 @@ namespace eBizWiztoEdifyBiz
         }
 
         static string Dt(object v) { return v == DBNull.Value || v == null ? "" : Convert.ToDateTime(v).ToString("dd/MM/yyyy", CultureInfo.InvariantCulture); }
-
-        // payments + paymentdetails are written by THIS module only (nothing else in the migration touches them),
-        // so a re-run clears what an earlier run of this module left behind instead of duplicating every receipt.
-        // companybank is left alone - EnsureCompanyBanks is idempotent. - Aftab Alam
-        static void ClearPrevious(SqlConnection tgt)
-        {
-            int det, pay;
-            using (SqlCommand c = new SqlCommand("DELETE FROM paymentdetails", tgt)) { c.CommandTimeout = 0; det = c.ExecuteNonQuery(); }
-            using (SqlCommand c = new SqlCommand("DELETE FROM payments", tgt)) { c.CommandTimeout = 0; pay = c.ExecuteNonQuery(); }
-            if (pay > 0 || det > 0) Console.WriteLine("  Re-run: cleared " + pay + " payments / " + det + " paymentdetails written by an earlier run of this module");
-        }
 
         // Bank/Cash is required on the payment form and the list shows "accountno - bank" -> seed the client's own banks.
         static void EnsureCompanyBanks(SqlConnection tgt)
@@ -8897,7 +9225,6 @@ namespace eBizWiztoEdifyBiz
             using (SqlConnection tgt = OpenTgt())
             {
                 BuildMaps(tgt);
-                ClearPrevious(tgt);
                 LoadSource();
                 Console.WriteLine("Maps: complaints=" + _callCode.Count + ", questions=" + _question.Count + ", answers=" + _answer.Count +
                                   " | surveys " + _sets + " across " + _rows.Count + " calls");
@@ -9008,17 +9335,6 @@ namespace eBizWiztoEdifyBiz
             return v < 1 ? 1 : (v > 5 ? 5 : v);
         }
 
-        // Only this module writes customerfeedback rows tagged 'COM', so a re-run replaces its own output.
-        static void ClearPrevious(SqlConnection tgt)
-        {
-            using (SqlCommand c = new SqlCommand("DELETE FROM customerfeedback WHERE module = 'COM'", tgt))
-            {
-                c.CommandTimeout = 0;
-                int n = c.ExecuteNonQuery();
-                if (n > 0) Console.WriteLine("  Re-run: cleared " + n + " feedback rows written by an earlier run of this module");
-            }
-        }
-
         static void LoadSource()
         {
             // { 0 question, 1 answer, 2 text, 3 addedon, 4 editedon }
@@ -9083,7 +9399,6 @@ namespace eBizWiztoEdifyBiz
             using (SqlConnection tgt = OpenTgt())
             {
                 EnsureUserByCode();
-                ClearPrevious(tgt);
                 List<Year> years = LoadYears();
                 Console.WriteLine("Maps: users=" + UserByCode.Count + " | yearly targets " + years.Count + " (" + _merged + " merged)");
                 Console.WriteLine("-----------------------------------------------------");
@@ -9161,17 +9476,6 @@ namespace eBizWiztoEdifyBiz
             }
         }
 
-        // Only this module writes target rows with module 'SAL' in the migration; a re-run replaces its own output.
-        static void ClearPrevious(SqlConnection tgt)
-        {
-            using (SqlCommand c = new SqlCommand("DELETE FROM target WHERE module = 'SAL'", tgt))
-            {
-                c.CommandTimeout = 0;
-                int n = c.ExecuteNonQuery();
-                if (n > 0) Console.WriteLine("  Re-run: cleared " + n + " target rows written by an earlier run of this module");
-            }
-        }
-
         static List<Year> LoadYears()
         {
             Dictionary<string, DataRow> hdr = new Dictionary<string, DataRow>();
@@ -9229,7 +9533,7 @@ namespace eBizWiztoEdifyBiz
     // ==================================================================
     static class Campaign
     {
-        const string Marker = "Migrated from eBizWiz Campaign ";
+        internal const string Marker = "Migrated from eBizWiz Campaign ";   // also used by CLEAN - Aftab Alam
         static Dictionary<int, string> _city, _item, _profile, _source;
         static readonly Dictionary<string, List<string>> _cities = new Dictionary<string, List<string>>();
         static readonly Dictionary<string, List<string>> _items = new Dictionary<string, List<string>>();
@@ -9251,7 +9555,6 @@ namespace eBizWiztoEdifyBiz
 
             using (SqlConnection tgt = OpenTgt())
             {
-                ClearPrevious(tgt);
                 LoadChildren();
                 DataTable hdr = GetSrc(@"SELECT ncode, nofficeid, vtrnprefix, ntrnno, dtrndate, vcampaignname, dfromdate, dtodate, vobjective, nexpectedsales,
                                                vrefno, drefdate, vremarks, vcomment, bapproval, approvedon, addedon, editedon
@@ -9310,20 +9613,6 @@ namespace eBizWiztoEdifyBiz
                 c.ExecuteNonQuery();
             }
             _rows++;
-        }
-
-        // Re-run: remove only the headers this module wrote (marker in the body, migration user, and still no recipients).
-        static void ClearPrevious(SqlConnection tgt)
-        {
-            using (SqlCommand c = new SqlCommand(@"DELETE m FROM mmcampaign m
-                                                   WHERE m.createdby = @cb AND m.body LIKE @mk
-                                                     AND NOT EXISTS (SELECT 1 FROM mmcampaignemails e WHERE e.mmccode = m.code)", tgt))
-            {
-                c.Parameters.AddWithValue("@cb", MigrationUser);
-                c.Parameters.AddWithValue("@mk", Marker + "%");
-                int n = c.ExecuteNonQuery();
-                if (n > 0) Console.WriteLine("  Re-run: cleared " + n + " campaigns written by an earlier run of this module");
-            }
         }
 
         static void LoadChildren()
