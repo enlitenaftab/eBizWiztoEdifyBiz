@@ -23,10 +23,10 @@ namespace eBizWiztoEdifyBiz
     static class Shared
     {
         // Same server / uid / pwd for both databases.
-        // public const string srccnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=saksham70v1_1;Uid=sa;Pwd=password@1;";
-        // public const string tgtcnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=SakshamRMtP15329;Uid=sa;Pwd=password@1;";
-        public const string srccnstr = @"Server=EDIFY001;Database=saksham70v1_1;Uid=sqladmin;Pwd=C6H4$#$123$#;";
-        public const string tgtcnstr = @"Server=EDIFY001;Database=SakshamRMtP15329;Uid=sqladmin;Pwd=C6H4$#$123$#;";
+        public const string srccnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=saksham70v1_1;Uid=sa;Pwd=password@1;";
+        public const string tgtcnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=SakshamRMtP15329;Uid=sa;Pwd=password@1;";
+        // public const string srccnstr = @"Server=EDIFY001;Database=saksham70v1_1;Uid=sqladmin;Pwd=C6H4$#$123$#;";
+        // public const string tgtcnstr = @"Server=EDIFY001;Database=SakshamRMtP15329;Uid=sqladmin;Pwd=C6H4$#$123$#;";
 
         // User stamped as creator/updater on every migrated row (1 = Admin).
         public const int MigrationUser = 1;
@@ -605,6 +605,9 @@ namespace eBizWiztoEdifyBiz
                 }
             }
 
+            try { Cleanup.FixInqcodeChain(); }
+            catch (Exception ex) { Console.WriteLine("!!! inqcode chain fix failed: " + ex.Message); }
+
             Console.WriteLine();
             Console.WriteLine("Done. Press any key to exit.");
             Console.ResetColor();
@@ -803,6 +806,28 @@ namespace eBizWiztoEdifyBiz
                 }
             }
             return string.Join(",", codes.ToArray());
+        }
+
+        // eBizWiz leaves inqcs.inqcode empty; the Inquiry/Quotation Work Flow listing groups the CI/CQ/SO
+        // chain by inqcode and errors on an empty one. Set inqcode to the chain root (walked up through inqlink)
+        // for our migrated rows only - standalone rows get their own code. - Aftab Alam
+        public static void FixInqcodeChain()
+        {
+            using (SqlConnection tgt = OpenTgt())
+            {
+                string br = OurBranches(tgt);
+                if (br.Length == 0) return;
+                using (SqlCommand q = new SqlCommand("UPDATE inqcs SET inqcode = code WHERE branchcode IN (" + br + ") AND inqcode IS NULL AND (inqlink IS NULL OR inqlink = 0)", tgt))
+                    q.ExecuteNonQuery();
+                for (int pass = 0; pass < 10; pass++)
+                {
+                    using (SqlCommand q = new SqlCommand("UPDATE ch SET ch.inqcode = p.inqcode FROM inqcs ch JOIN inqcs p ON ch.inqlink = p.code WHERE ch.branchcode IN (" + br + ") AND ch.inqcode IS NULL AND p.inqcode IS NOT NULL", tgt))
+                        if (q.ExecuteNonQuery() == 0) break;
+                }
+                using (SqlCommand q = new SqlCommand("UPDATE inqcs SET inqcode = code WHERE branchcode IN (" + br + ") AND inqcode IS NULL", tgt))
+                    q.ExecuteNonQuery();
+                Console.WriteLine("  inqcs.inqcode chain link set for migrated rows (branches " + br + ").");
+            }
         }
 
         // Deleted in batches: one DELETE of a whole table (inqcsdet alone is ~856,000 rows) has to be held by the
