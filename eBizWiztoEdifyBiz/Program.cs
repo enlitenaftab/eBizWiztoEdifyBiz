@@ -23,10 +23,10 @@ namespace eBizWiztoEdifyBiz
     static class Shared
     {
         // Same server / uid / pwd for both databases.
-        public const string srccnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=saksham70v1_1;Uid=sa;Pwd=password@1;";
-        public const string tgtcnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=SakshamRMtP15329;Uid=sa;Pwd=password@1;";
-        // public const string srccnstr = @"Server=EDIFY001;Database=saksham70v1_1;Uid=sqladmin;Pwd=C6H4$#$123$#;";
-        // public const string tgtcnstr = @"Server=EDIFY001;Database=SakshamRMtP15329;Uid=sqladmin;Pwd=C6H4$#$123$#;";
+        // public const string srccnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=saksham70v1_1;Uid=sa;Pwd=password@1;";
+        // public const string tgtcnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=SakshamRMtP15329;Uid=sa;Pwd=password@1;";
+        public const string srccnstr = @"Server=EDIFY001;Database=saksham70v1_1;Uid=sqladmin;Pwd=C6H4$#$123$#;";
+        public const string tgtcnstr = @"Server=EDIFY001;Database=SakshamRMtP15329;Uid=sqladmin;Pwd=C6H4$#$123$#;";
 
         // User stamped as creator/updater on every migrated row (1 = Admin).
         public const int MigrationUser = 1;
@@ -6350,7 +6350,7 @@ namespace eBizWiztoEdifyBiz
             string ttext = Str(h["vtermsconditions"]); if (ttext.Length > 0) termParts.Add(ttext);
             string termsValue = string.Join(" | ", termParts);
             //string cset = LookInt(_checkset, Int(h["ncheckset"])); if (cset.Length > 0) rem.Add("Check List: " + cset);   // check set -> Checklist Master; items are in the Task Check List tab, not in the remark - Aftab Alam
-            string conv = LookInt(_fixed, Int(h["nconversion"])); if (conv.Length > 0) rem.Add("Conversion chance: " + conv);
+            // Conversion chance has its own column now (inqcs.conversion, @conversion below), so it is no longer added to the remark. - Aftab Alam
 
             using (SqlTransaction tx = tgt.BeginTransaction())
             {

@@ -27,6 +27,16 @@ Run this file **before** the migration exe, on the saksham database only.
 | 13 | `pur_order` | `invoicedate` | datetime | Purchase Order | Supplier invoice date |
 | 14 | `pur_order` | `oano` | nvarchar(100) | Purchase Order | Order acknowledgement number |
 | 15 | `pur_order` | `oadate` | datetime | Purchase Order | Order acknowledgement date |
+| 16 | `inqcs` | `offertype` | int | AMC Quotation (header) | Offer Type → `miscellaneous(Inquiry/Offer Type)` |
+| 17 | `inqcs` | `paymentschedule` | int | AMC Quotation (header) | Payment Schedule → `miscellaneous(Inquiry/Payment Schedule)` |
+| 18 | `inqcs` | `begorend` | varchar(20) | AMC Quotation (header) | Billing at Beginning / End of period (B / E) |
+| 19 | `inqcs` | `conversion` | int | AMC Quotation (header) | Conversion → `miscellaneous(Inquiry/Conversion)` |
+| 20 | `inqcsdet` | `offeris` | int | AMC Quotation (line) | Offer Is → `miscellaneous(Inquiry/Offer Is)` |
+| 21 | `inqcsdet` | `amcstartdate` | datetime | AMC Quotation (line) | AMC Start Date |
+| 22 | `inqcsdet` | `amcenddate` | datetime | AMC Quotation (line) | AMC End Date |
+| 23 | `inqcsdet` | `amcmonths` | int | AMC Quotation (line) | AMC Month (contract duration) |
+| 24 | `inqcsdet` | `amccontracttype` | int | AMC Quotation (line) | AMC Contract Type → `miscellaneous(Inquiry/AMC Contract Type)` |
+| 25 | `inqcsdet` | `amcpmvisits` | int | AMC Quotation (line) | AMC PM Visit count |
 
 ```sql
 IF COL_LENGTH('inqcs','stage')             IS NULL ALTER TABLE inqcs     ADD stage           int NULL;
@@ -37,6 +47,17 @@ IF COL_LENGTH('inqcs','enqrefno')          IS NULL ALTER TABLE inqcs     ADD enq
 IF COL_LENGTH('inqcs','enqrefdate')        IS NULL ALTER TABLE inqcs     ADD enqrefdate      datetime NULL;
 IF COL_LENGTH('inqcs','followupdate')      IS NULL ALTER TABLE inqcs     ADD followupdate    datetime NULL;
 IF COL_LENGTH('inqcs','pendingreason')     IS NULL ALTER TABLE inqcs     ADD pendingreason   int NULL;
+IF COL_LENGTH('inqcs','offertype')         IS NULL ALTER TABLE inqcs     ADD offertype       int NULL;
+IF COL_LENGTH('inqcs','paymentschedule')   IS NULL ALTER TABLE inqcs     ADD paymentschedule int NULL;
+IF COL_LENGTH('inqcs','begorend')          IS NULL ALTER TABLE inqcs     ADD begorend        varchar(20) NULL;
+IF COL_LENGTH('inqcs','conversion')        IS NULL ALTER TABLE inqcs     ADD conversion      int NULL;
+
+IF COL_LENGTH('inqcsdet','offeris')         IS NULL ALTER TABLE inqcsdet  ADD offeris          int NULL;
+IF COL_LENGTH('inqcsdet','amcstartdate')    IS NULL ALTER TABLE inqcsdet  ADD amcstartdate     datetime NULL;
+IF COL_LENGTH('inqcsdet','amcenddate')      IS NULL ALTER TABLE inqcsdet  ADD amcenddate       datetime NULL;
+IF COL_LENGTH('inqcsdet','amcmonths')       IS NULL ALTER TABLE inqcsdet  ADD amcmonths        int NULL;
+IF COL_LENGTH('inqcsdet','amccontracttype') IS NULL ALTER TABLE inqcsdet  ADD amccontracttype  int NULL;
+IF COL_LENGTH('inqcsdet','amcpmvisits')     IS NULL ALTER TABLE inqcsdet  ADD amcpmvisits      int NULL;
 
 IF COL_LENGTH('followup','priority')       IS NULL ALTER TABLE followup  ADD priority        int NULL;
 
