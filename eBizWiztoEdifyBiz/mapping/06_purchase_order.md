@@ -99,7 +99,7 @@ This is the one module where the client screen is much wider than ours: eBizWiz 
 | 12 | Custom Clearance Recd. Amt. | `ncustomclerecamt` | `pur_order.remarks` | `Custom Clearance Recd. Amt.: <value>` |
 | 13 | Custom Clearance Pending Amt. | `ncustomclependamt` | `pur_order.remarks` | `Custom Clearance Pending Amt.: <value>` |
 | 14 | CCS Remarks | `vccsremarks` | `pur_order.remarks` | `CCS Remarks: <value>` |
-| 15 | Post Tax Charges (whole screen) | `trdordpl4posttaxchgs` → `mstprepostchgs.vname` | `pur_order.remarks` | `Post Tax Charges: <name> <amount or percent>; …`. Unlike Sales Order and Quotation, a PO has no adjustment table in EdifyBiz |
+| 15 | Post Tax Charges (whole screen) | `trdordpl4posttaxchgs` → `mstprepostchgs.vname` | **`pur_adjust`** (adjustname/adjustpercent/adjustamount) | **Now migrated to the standard PO adjustment table, exactly like Sales Order / Quotation (`Shared.ComputeCharges` + the "Other items (eBizWiz)" / "Tax on items (eBizWiz)" reconciliation rows). No longer in the remarks. The saksham PO form's adjustment-name field is a dropdown off the Post Tax Charges master. PO total = items + line tax + charges = eBizWiz total on 97.1% of POs (the rest differ because eBizWiz's own totals omit their charges). Updated 2026-11-19 — Aftab Alam** |
 | 16 | Payment Terms (whole screen) | `trdordpl3payterms` → `mstpaymentterms.vname` | `pur_order.term` | `Payment Terms: <term> <percent>% = <amount>; …`, one entry per row |
 | 17 | Terms & Cond. (set) | `trhordpl.nterms` → `msttermset.vname` | `pur_order.term` | `Terms & Cond.: <set name>` |
 

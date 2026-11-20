@@ -19,6 +19,7 @@
 |---|---|---|---|---|---|
 | 1 | Trn. No. | `trhordrc.vtrnprefix` + `ntrnno` | Order No. | `inqcs.inqref` | e.g. `OR3679` |
 | 2 | Trn. Date | `trhordrc.dtrndate` | Order Date | `inqcs.inqdate` | |
+| 2a | Valid Date | (none — defaulted) | Valid Date | `inqcs.validdate` = `inqcs.inqdate` | eBizWiz SO has no validity date; set equal to Order Date so the saksham current-date-locked Valid Date field is not empty when editing a migrated order |
 | 3 | Order By | `trhordrc.nfromparty` → `contact` | Company Name | `inqcs.cscode` | The party the order came from. Resolved through the migrated Contact |
 | 4 | Party Contact 1 + Party Contact 2 | `npartycontact`, `npartycontact2` → `mltcontact` | Contact Person | `inqcs.cperson` | Both contacts, comma-separated |
 | 5 | Order Is | `trhordrc.nordrecdtype` → `mstfixedselection` | Order Type | `inqcs.ordertype` | `FRESH - SALES ORDER`, `AGAINST QUOTATION - SERVICE ORDER`, … Seeded into `miscellaneous(Inquiry / Order Type)` |
@@ -31,6 +32,7 @@
 | 12 | Client Order No. | `trhordrc.vrefno` | PO Number | `inqcs.ponumber` | Capped 200 |
 | 13 | Client Order Date | `trhordrc.drefdate` | PO Date | `inqcs.podate` | |
 | 14 | Prn.Order Ackn. No. | `trhordrc.vordacknno` | Principal SO Number | `inqcs.sono` | Capped 100 |
+| 14b | OrderTo (listing) | `trhordpl.ntoparty` of the Order Placed made against this OR (link: `trdordpl1items.nordrcditemdetailncode` → `trdordrc1items.ncode`; latest OP by `ncode`) → `contact` | OrderTo (list column) | `inqcs.principle` | Principal of the PO placed against this SO; blank when no OP exists. Listing `app/inquiry.asp` shows `contact.name` of `principle` (was wrongly `a.ordertype`). 5,710 / 7,918 orders have an OP; 25 multi-principal orders take the latest |
 | 15 | Order Currency | `trhordrc.ncurrency` → `mstcurrency` | Currency | `inqcs.currency` | |
 | 16 | — | `trhordrc.nexchangerate` | Exchange Rate | `inqcs.exchangerate` | |
 | 17 | Order Status | `trhordrc.nordrecdstatus` → `mstfixedselection` | Status | `inqcs.status` | → `status` master |

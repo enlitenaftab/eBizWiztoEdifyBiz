@@ -67,6 +67,22 @@ IF COL_LENGTH('pur_order','invoiceno')       IS NULL ALTER TABLE pur_order ADD i
 IF COL_LENGTH('pur_order','invoicedate')     IS NULL ALTER TABLE pur_order ADD invoicedate     datetime NULL;
 IF COL_LENGTH('pur_order','oano')            IS NULL ALTER TABLE pur_order ADD oano            nvarchar(100) NULL;
 IF COL_LENGTH('pur_order','oadate')          IS NULL ALTER TABLE pur_order ADD oadate          datetime NULL;
+IF COL_LENGTH('pur_order','commissionrequested')    IS NULL ALTER TABLE pur_order ADD commissionrequested    numeric(18,2) NULL;
+IF COL_LENGTH('pur_order','commissionreqcurrency')  IS NULL ALTER TABLE pur_order ADD commissionreqcurrency  int NULL;
+IF COL_LENGTH('pur_order','commissionreceived')     IS NULL ALTER TABLE pur_order ADD commissionreceived     numeric(18,2) NULL;
+IF COL_LENGTH('pur_order','commissionreccurrency')  IS NULL ALTER TABLE pur_order ADD commissionreccurrency  int NULL;
+IF COL_LENGTH('pur_order','orvalpayrecdperc')        IS NULL ALTER TABLE pur_order ADD orvalpayrecdperc       numeric(13,2) NULL;
+IF COL_LENGTH('pur_order','orvalpayrecdamt')         IS NULL ALTER TABLE pur_order ADD orvalpayrecdamt        numeric(18,2) NULL;
+IF COL_LENGTH('pur_order','orvalpaypenperc')         IS NULL ALTER TABLE pur_order ADD orvalpaypenperc        numeric(13,2) NULL;
+IF COL_LENGTH('pur_order','orvalpaypenamt')          IS NULL ALTER TABLE pur_order ADD orvalpaypenamt         numeric(18,2) NULL;
+IF COL_LENGTH('pur_order','paymentpendingdate')      IS NULL ALTER TABLE pur_order ADD paymentpendingdate     datetime NULL;
+IF COL_LENGTH('pur_order','custclearinrvalue')       IS NULL ALTER TABLE pur_order ADD custclearinrvalue      numeric(18,2) NULL;
+IF COL_LENGTH('pur_order','custclearrecdamt')        IS NULL ALTER TABLE pur_order ADD custclearrecdamt       numeric(18,2) NULL;
+IF COL_LENGTH('pur_order','custclearpendamt')        IS NULL ALTER TABLE pur_order ADD custclearpendamt       numeric(18,2) NULL;
+IF COL_LENGTH('pur_order','ccsremarks')              IS NULL ALTER TABLE pur_order ADD ccsremarks             nvarchar(max) NULL;
+IF COL_LENGTH('pur_order','dispatchdate')            IS NULL ALTER TABLE pur_order ADD dispatchdate           datetime NULL;
+IF COL_LENGTH('pur_order','installationdate')        IS NULL ALTER TABLE pur_order ADD installationdate       datetime NULL;
+IF COL_LENGTH('pur_order','comment')                 IS NULL ALTER TABLE pur_order ADD comment                nvarchar(max) NULL;
 ```
 
 ---

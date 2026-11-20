@@ -23,10 +23,10 @@ namespace eBizWiztoEdifyBiz
     static class Shared
     {
         // Same server / uid / pwd for both databases.
-        public const string srccnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=saksham70v1_1;Uid=sa;Pwd=password@1;";
-        public const string tgtcnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=SakshamRMtP15329;Uid=sa;Pwd=password@1;";
-        // public const string srccnstr = @"Server=EDIFY001;Database=saksham70v1_1;Uid=sqladmin;Pwd=C6H4$#$123$#;";
-        // public const string tgtcnstr = @"Server=EDIFY001;Database=SakshamRMtP15329;Uid=sqladmin;Pwd=C6H4$#$123$#;";
+        // public const string srccnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=saksham70v1_1;Uid=sa;Pwd=password@1;";
+        // public const string tgtcnstr = @"Server=ENLITEN\SQLEXPRESS05;Database=SakshamRMtP15329;Uid=sa;Pwd=password@1;";
+        public const string srccnstr = @"Server=EDIFY001;Database=saksham70v1_1;Uid=sqladmin;Pwd=C6H4$#$123$#;";
+        public const string tgtcnstr = @"Server=EDIFY001;Database=SakshamRMtP15329;Uid=sqladmin;Pwd=C6H4$#$123$#;";
 
         // User stamped as creator/updater on every migrated row (1 = Admin).
         public const int MigrationUser = 1;
@@ -749,6 +749,7 @@ namespace eBizWiztoEdifyBiz
 
                 // Purchase Order
                 Del(tgt, "pur_order_det",          "DELETE FROM pur_order_det WHERE purcode IN " + ourPur);
+                Del(tgt, "pur_adjust",             "DELETE FROM pur_adjust WHERE purcode IN " + ourPur);
                 Del(tgt, "taskchecklist (PUR)",    "DELETE FROM taskchecklist WHERE module = 'PUR' AND modulecode IN " + ourPur);
                 Del(tgt, "pur_order",              "DELETE FROM pur_order WHERE branchcode IN (" + br + ")");
 
@@ -818,14 +819,14 @@ namespace eBizWiztoEdifyBiz
                 string br = OurBranches(tgt);
                 if (br.Length == 0) return;
                 using (SqlCommand q = new SqlCommand("UPDATE inqcs SET inqcode = code WHERE branchcode IN (" + br + ") AND inqcode IS NULL AND (inqlink IS NULL OR inqlink = 0)", tgt))
-                    q.ExecuteNonQuery();
+                { q.CommandTimeout = 0; q.ExecuteNonQuery(); }
                 for (int pass = 0; pass < 10; pass++)
                 {
                     using (SqlCommand q = new SqlCommand("UPDATE ch SET ch.inqcode = p.inqcode FROM inqcs ch JOIN inqcs p ON ch.inqlink = p.code WHERE ch.branchcode IN (" + br + ") AND ch.inqcode IS NULL AND p.inqcode IS NOT NULL", tgt))
-                        if (q.ExecuteNonQuery() == 0) break;
+                    { q.CommandTimeout = 0; if (q.ExecuteNonQuery() == 0) break; }
                 }
                 using (SqlCommand q = new SqlCommand("UPDATE inqcs SET inqcode = code WHERE branchcode IN (" + br + ") AND inqcode IS NULL", tgt))
-                    q.ExecuteNonQuery();
+                { q.CommandTimeout = 0; q.ExecuteNonQuery(); }
                 Console.WriteLine("  inqcs.inqcode chain link set for migrated rows (branches " + br + ").");
             }
         }
@@ -2902,6 +2903,7 @@ namespace eBizWiztoEdifyBiz
         static Dictionary<string, string> _userName;
         static readonly Dictionary<string, List<object[]>> _checksByKey = new Dictionary<string, List<object[]>>();
         static readonly Dictionary<string, List<string>> _payTermsByKey = new Dictionary<string, List<string>>();
+        static readonly Dictionary<string, string> _payTermFirstName = new Dictionary<string, string>();
         static int _cChecklist, _cPayTermDocs;
         static int _cRows, _cDet, _cDetSkipped, _cErrors, _custResolved, _custUnresolved, _newStatus, _newCategory, _newLostReason, _newQuoteType, _inqLinked;
         static int _cAdj, _docGst, _lineDisc;
@@ -2930,6 +2932,7 @@ namespace eBizWiztoEdifyBiz
                 LoadHeaderProducts();
                 _chargesByKey = LoadPostTaxCharges("trdquote3posttaxchgs", "nquote");
                 _taxsetName = SrcLookupInt("SELECT ncode, vname FROM msttaxset WITH (NOLOCK)");
+                SeedPaymentTerms(tgt);
                 LoadChecklistsAndPayTerms();
                 EnsureBranches(tgt);
                 BuildInqLink(tgt);
@@ -3024,13 +3027,41 @@ namespace eBizWiztoEdifyBiz
             return string.Join(" | ", parts);
         }
 
-        // Payment Terms grid + Terms & Cond. set -> inqcs.terms: the saksham CQ form has a "Terms" field and the view shows it as "Term Details". - Aftab Alam
         static string BuildTerms(SqlDataReader dr)
         {
-            List<string> parts = new List<string>();
-            List<string> pt; if (_payTermsByKey.TryGetValue(Int(dr["nofficeid"]) + "|" + Int(dr["ncode"]), out pt)) { parts.Add("Payment Terms: " + string.Join("; ", pt)); _cPayTermDocs++; }
-            string tset = LookInt(_termset, Int(dr["nterms"])); if (tset.Length > 0) parts.Add("Terms & Cond.: " + tset);
-            return string.Join(" | ", parts);
+            string nm;
+            if (_payTermFirstName.TryGetValue(Int(dr["nofficeid"]) + "|" + Int(dr["ncode"]), out nm) && nm.Length > 0) { _cPayTermDocs++; return nm; }
+            return "";
+        }
+
+        static void SeedPaymentTerms(SqlConnection tgt)
+        {
+            using (SqlCommand cr = new SqlCommand("IF OBJECT_ID('dbo.paymentTerms') IS NULL CREATE TABLE dbo.paymentTerms (code int IDENTITY(1,1) NOT NULL, termsheading nvarchar(255) NULL, shortdesc nvarchar(max) NULL, longdesc nvarchar(max) NULL, businesstype varchar(100) NULL, isdefault int NOT NULL DEFAULT(0), createdby int NULL, createdon datetime NULL, updatedby int NULL, updatedon datetime NULL, behaviour varchar(30) NULL)", tgt))
+                cr.ExecuteNonQuery();
+            HashSet<string> have = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT shortdesc FROM paymentTerms WHERE termsheading='Payment Terms'").Tables[0].Rows) { string n0 = Str(r["shortdesc"]).Trim(); if (n0.Length > 0) have.Add(n0); }
+            int added = 0;
+            foreach (DataRow r in GetSrc("SELECT DISTINCT vname FROM mstpaymentterms WITH (NOLOCK)").Tables[0].Rows)
+            {
+                string n = Str(r["vname"]).Trim();
+                if (n.Length == 0 || have.Contains(n)) continue;
+                using (SqlCommand ins = new SqlCommand("INSERT INTO paymentTerms (termsheading, shortdesc, isdefault, createdby, createdon, updatedby, updatedon) VALUES ('Payment Terms', @n, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                { ins.Parameters.AddWithValue("@n", n); ins.Parameters.AddWithValue("@cb", MigrationUser); ins.ExecuteNonQuery(); }
+                have.Add(n); added++;
+            }
+            Console.WriteLine("  Payment terms master seeded: +" + added + " (total " + have.Count + ")");
+            HashSet<string> havec = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT shortdesc FROM paymentTerms WHERE termsheading='Post Tax Charges'").Tables[0].Rows) { string n0 = Str(r["shortdesc"]).Trim(); if (n0.Length > 0) havec.Add(n0); }
+            int addedc = 0;
+            foreach (DataRow r in GetSrc("SELECT DISTINCT vname FROM mstprepostchgs WITH (NOLOCK)").Tables[0].Rows)
+            {
+                string n = Str(r["vname"]).Trim();
+                if (n.Length == 0 || havec.Contains(n)) continue;
+                using (SqlCommand ins = new SqlCommand("INSERT INTO paymentTerms (termsheading, shortdesc, isdefault, createdby, createdon, updatedby, updatedon) VALUES ('Post Tax Charges', @n, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                { ins.Parameters.AddWithValue("@n", n); ins.Parameters.AddWithValue("@cb", MigrationUser); ins.ExecuteNonQuery(); }
+                havec.Add(n); addedc++;
+            }
+            Console.WriteLine("  Post Tax Charges master seeded: +" + addedc + " (total " + havec.Count + ")");
         }
 
         // Quotation Check List (trdquote5checks) and Payment Terms grid (trdquote2payterms), keyed office|quote. - Aftab Alam
@@ -3059,6 +3090,7 @@ namespace eBizWiztoEdifyBiz
                 if (r["namount"] != DBNull.Value) txt += " = " + Dec(r["namount"]).ToString("0.00", CultureInfo.InvariantCulture);
                 List<string> l; if (!_payTermsByKey.TryGetValue(k, out l)) _payTermsByKey[k] = l = new List<string>();
                 l.Add(txt); p++;
+                if (!_payTermFirstName.ContainsKey(k)) _payTermFirstName[k] = nm;
             }
             Console.WriteLine("  Check lists loaded: " + n + " items across " + _checksByKey.Count + " quotations; payment terms " + p + " rows across " + _payTermsByKey.Count + " quotations");
         }
@@ -3515,8 +3547,10 @@ namespace eBizWiztoEdifyBiz
         static readonly Dictionary<string, string> _checkName = new Dictionary<string, string>();
         // Payment Terms grid (trdordrc3payterms), order expenses (trdordrc6expenses) and the Check List set name. - Aftab Alam
         static readonly Dictionary<string, List<string>> _payTermsByKey = new Dictionary<string, List<string>>();
+        static readonly Dictionary<string, string> _payTermFirstName = new Dictionary<string, string>();
         static readonly Dictionary<string, List<string>> _expensesByKey = new Dictionary<string, List<string>>();
         static readonly Dictionary<string, DateTime> _despDateByOrder = new Dictionary<string, DateTime>();   // office|trhordrc ncode -> despatch date
+        static readonly Dictionary<string, string> _principalByOrder = new Dictionary<string, string>();   // office|trhordrc ncode -> Order Placed ntoparty key (Order To = principal)
         static Dictionary<int, string> _checkset, _payTermName;
         static int _cPayTermDocs, _cExpenseDocs, _billToOwn, _cDespDates;
         static int _cRows, _cDet, _cDetSkipped, _cErrors, _custResolved, _custUnresolved, _newStatus, _newCategory, _newPend, _quoteLinked, _cChecklist;
@@ -3554,6 +3588,7 @@ namespace eBizWiztoEdifyBiz
                 BuildInqLink(tgt);
                 BuildPartyAddresses();
                 LoadChecklists();
+                SeedPaymentTerms(tgt);
                 LoadPayTermsAndExpenses();
 
                 Console.WriteLine("Maps: status=" + _mapStatus.Count + "(+" + _newStatus + "), category=" + _mapCategory.Count + "(+" + _newCategory +
@@ -3642,6 +3677,7 @@ namespace eBizWiztoEdifyBiz
             m.ShippingBranch = shipBranch;
             m.BuyerBranch = billBranch;
             DateTime dd; if (_despDateByOrder.TryGetValue(office + "|" + m.SourceCode, out dd)) { m.CustomerDeliveryDate = dd; _cDespDates++; }
+            string ppk; if (_principalByOrder.TryGetValue(office + "|" + m.SourceCode, out ppk)) m.PrincipleKey = ppk;
             m.InqLink = inqlink;
             m.InqCode = inqcode;
             m.Createdon = P(dr["addedon"]);
@@ -3667,13 +3703,42 @@ namespace eBizWiztoEdifyBiz
             return string.Join(" | ", parts);
         }
 
-        // Payment Terms -> inqcs.terms (same as Customer Quotation) and the order Expenses grid -> remark. - Aftab Alam
+        // Payment Terms -> inqcs.terms as the single master name (same as Customer Quotation), so the saksham dropdown shows it. - Aftab Alam
         static string BuildTerms(SqlDataReader dr)
         {
-            List<string> pt;
-            if (!_payTermsByKey.TryGetValue(Int(dr["nofficeid"]) + "|" + Int(dr["ncode"]), out pt)) return "";
-            _cPayTermDocs++;
-            return "Payment Terms: " + string.Join("; ", pt);
+            string nm;
+            if (_payTermFirstName.TryGetValue(Int(dr["nofficeid"]) + "|" + Int(dr["ncode"]), out nm) && nm.Length > 0) { _cPayTermDocs++; return nm; }
+            return "";
+        }
+
+        static void SeedPaymentTerms(SqlConnection tgt)
+        {
+            using (SqlCommand cr = new SqlCommand("IF OBJECT_ID('dbo.paymentTerms') IS NULL CREATE TABLE dbo.paymentTerms (code int IDENTITY(1,1) NOT NULL, termsheading nvarchar(255) NULL, shortdesc nvarchar(max) NULL, longdesc nvarchar(max) NULL, businesstype varchar(100) NULL, isdefault int NOT NULL DEFAULT(0), createdby int NULL, createdon datetime NULL, updatedby int NULL, updatedon datetime NULL, behaviour varchar(30) NULL)", tgt))
+                cr.ExecuteNonQuery();
+            HashSet<string> have = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT shortdesc FROM paymentTerms WHERE termsheading='Payment Terms'").Tables[0].Rows) { string n0 = Str(r["shortdesc"]).Trim(); if (n0.Length > 0) have.Add(n0); }
+            int added = 0;
+            foreach (DataRow r in GetSrc("SELECT DISTINCT vname FROM mstpaymentterms WITH (NOLOCK)").Tables[0].Rows)
+            {
+                string n = Str(r["vname"]).Trim();
+                if (n.Length == 0 || have.Contains(n)) continue;
+                using (SqlCommand ins = new SqlCommand("INSERT INTO paymentTerms (termsheading, shortdesc, isdefault, createdby, createdon, updatedby, updatedon) VALUES ('Payment Terms', @n, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                { ins.Parameters.AddWithValue("@n", n); ins.Parameters.AddWithValue("@cb", MigrationUser); ins.ExecuteNonQuery(); }
+                have.Add(n); added++;
+            }
+            Console.WriteLine("  Payment terms master seeded: +" + added + " (total " + have.Count + ")");
+            HashSet<string> havec = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT shortdesc FROM paymentTerms WHERE termsheading='Post Tax Charges'").Tables[0].Rows) { string n0 = Str(r["shortdesc"]).Trim(); if (n0.Length > 0) havec.Add(n0); }
+            int addedc = 0;
+            foreach (DataRow r in GetSrc("SELECT DISTINCT vname FROM mstprepostchgs WITH (NOLOCK)").Tables[0].Rows)
+            {
+                string n = Str(r["vname"]).Trim();
+                if (n.Length == 0 || havec.Contains(n)) continue;
+                using (SqlCommand ins = new SqlCommand("INSERT INTO paymentTerms (termsheading, shortdesc, isdefault, createdby, createdon, updatedby, updatedon) VALUES ('Post Tax Charges', @n, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                { ins.Parameters.AddWithValue("@n", n); ins.Parameters.AddWithValue("@cb", MigrationUser); ins.ExecuteNonQuery(); }
+                havec.Add(n); addedc++;
+            }
+            Console.WriteLine("  Post Tax Charges master seeded: +" + addedc + " (total " + havec.Count + ")");
         }
 
         static void LoadPayTermsAndExpenses()
@@ -3690,12 +3755,23 @@ namespace eBizWiztoEdifyBiz
                 if (r["namount"] != DBNull.Value) txt += " = " + Dec(r["namount"]).ToString("0.00", CultureInfo.InvariantCulture);
                 List<string> l; if (!_payTermsByKey.TryGetValue(k, out l)) _payTermsByKey[k] = l = new List<string>();
                 l.Add(txt); p++;
+                if (!_payTermFirstName.ContainsKey(k)) _payTermFirstName[k] = nm;
             }
             // Despatch date: eBizWiz keeps one row per order line (same quantity as the line) but every line of an order carries the
             // SAME date (4,954 of 4,954 orders with a date), and our SO form has the date on the header ("Customer Delivery Date",
             // inqcs.customertentativedate) - there is no line-level date field. So one date per order. - Aftab Alam
             foreach (DataRow r in GetSrc("SELECT nofficeid, nordrc, MIN(ddespdate) AS dt FROM trdordrc2despdate WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND ddespdate IS NOT NULL GROUP BY nofficeid, nordrc").Tables[0].Rows)
                 _despDateByOrder[Int(r["nofficeid"]) + "|" + Int(r["nordrc"])] = Convert.ToDateTime(r["dt"]);
+            foreach (DataRow r in GetSrc(@"SELECT nofficeid, nordrc, ntoparty FROM (
+                        SELECT rc.nofficeid, rc.ncode AS nordrc, pl.ntoparty,
+                               ROW_NUMBER() OVER (PARTITION BY rc.nofficeid, rc.ncode ORDER BY pl.ncode DESC) rn
+                        FROM trhordrc rc
+                        JOIN trdordrc1items ri ON ri.nordrc = rc.ncode AND ri.nofficeid = rc.nofficeid
+                        JOIN trdordpl1items pdi ON pdi.nordrcditemdetailncode = ri.ncode AND pdi.nofficeid = rc.nofficeid
+                        JOIN trhordpl pl ON pl.ncode = pdi.nordpl AND pl.nofficeid = pdi.nofficeid
+                        WHERE rc.nofficeid IN (" + OfficeIn + @") AND pl.ntoparty IS NOT NULL AND pl.ntoparty > 0
+                    ) t WHERE rn = 1").Tables[0].Rows)
+                _principalByOrder[Int(r["nofficeid"]) + "|" + Int(r["nordrc"])] = NKey(r["ntoparty"]);
             int e = 0;
             foreach (DataRow r in GetSrc("SELECT nofficeid, nordrc, nexpensetype, dexpensedate, namount, vremarks FROM trdordrc6expenses WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, nordrc, ncode").Tables[0].Rows)
             {
@@ -3721,6 +3797,9 @@ namespace eBizWiztoEdifyBiz
                 if (_branchByContact.TryGetValue(cid, out br)) csbranch = br;
             }
             else if (m.PartyKey.Length > 0) _custUnresolved++;
+
+            object principle = DBNull.Value;
+            int ppid; if (m.PrincipleKey.Length > 0 && _custByParty.TryGetValue(m.PrincipleKey, out ppid)) principle = ppid;
 
             // Bill To (client's own party) wins over the order party's default branch. - Aftab Alam
             if (m.BuyerBranch != DBNull.Value) { if (!m.BuyerBranch.Equals(csbranch)) _billToOwn++; csbranch = m.BuyerBranch; }
@@ -3748,12 +3827,12 @@ namespace eBizWiztoEdifyBiz
                     int code;
                     string ins = @"
                         INSERT INTO inqcs
-                            (cors, inqref, inqdate, cscode, csbranch, cperson, executive, status, Category,
-                             ordertype, sources, currency, exchangerate, ponumber, podate, shippingbranch,
+                            (cors, inqref, inqdate, validdate, cscode, csbranch, cperson, executive, status, Category,
+                             ordertype, sources, currency, exchangerate, ponumber, podate, shippingbranch, principle,
                              inqlink, inqcode, terms, customertentativedate, comcode, branchcode, remark, approvalstatus, sono, pendingreason, createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
-                        VALUES (@cors, @inqref, @inqdate, @cscode, @csbranch, @cperson, @exec, @status, @cat,
-                                @ordertype, @sources, @currency, @exrate, @pono, @podate, @shipbranch,
+                        VALUES (@cors, @inqref, @inqdate, @validdate, @cscode, @csbranch, @cperson, @exec, @status, @cat,
+                                @ordertype, @sources, @currency, @exrate, @pono, @podate, @shipbranch, @principle,
                                 @inqlink, @inqcode, @terms, @custdate, @com, @branch, @remark, '', @sono, @pendreason, @cb, @ub, @con, @uon)";
                     // approvalstatus '' = what the app posts on every save; the column default is 'Pending'. The client's order
                     // screen has no approval step (bapproval = 1 on all 7,658 orders). - Aftab Alam
@@ -3762,6 +3841,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@cors", Cors);
                         c.Parameters.AddWithValue("@inqref", PS(m.Inqref));
                         c.Parameters.AddWithValue("@inqdate", m.Inqdate);
+                        c.Parameters.AddWithValue("@validdate", m.Inqdate);
                         c.Parameters.AddWithValue("@cscode", cscode);
                         c.Parameters.AddWithValue("@csbranch", csbranch);
                         c.Parameters.AddWithValue("@cperson", PS(cperson));
@@ -3775,6 +3855,7 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@pono", PS(m.Ponumber));
                         c.Parameters.AddWithValue("@podate", m.Podate);
                         c.Parameters.AddWithValue("@shipbranch", m.ShippingBranch);
+                        c.Parameters.AddWithValue("@principle", principle);
                         c.Parameters.AddWithValue("@inqlink", m.InqLink);
                         c.Parameters.AddWithValue("@inqcode", m.InqCode);
                         c.Parameters.AddWithValue("@terms", PS(m.Terms));
@@ -4195,7 +4276,7 @@ namespace eBizWiztoEdifyBiz
         class InqRow
         {
             public int SourceCode, Office, PersonNo, PersonNo2, StatusCode, CategoryCode;
-            public string Inqref = "", PartyKey = "", OrderType = "", Sources = "", Ponumber = "", Remark = "", Terms = "";
+            public string Inqref = "", PartyKey = "", OrderType = "", Sources = "", Ponumber = "", Remark = "", Terms = "", PrincipleKey = "";
             public object Executive = MigrationUser;
             public object Createdby = MigrationUser, Updatedby = MigrationUser, Sono = DBNull.Value, PendingReason = DBNull.Value;
             public object Inqdate = DBNull.Value, Podate = DBNull.Value, Createdon = DBNull.Value, Updatedon = DBNull.Value,
@@ -4236,8 +4317,11 @@ namespace eBizWiztoEdifyBiz
         static readonly Dictionary<string, List<object[]>> _checksByKey = new Dictionary<string, List<object[]>>();
         static readonly Dictionary<string, List<string>> _payTermsByKey = new Dictionary<string, List<string>>();
         static readonly Dictionary<string, List<string>> _chargesTextByKey = new Dictionary<string, List<string>>();
+        static Dictionary<string, List<object[]>> _chargesByKey;                                           // office|PO ncode -> post-tax charges (LoadPostTaxCharges)
+        static readonly Dictionary<string, decimal> _itemsAllByKey = new Dictionary<string, decimal>();    // office|PO ncode -> sum(qty x nrate) of ALL lines
+        static readonly Dictionary<string, decimal> _lineTaxByKey = new Dictionary<string, decimal>();     // office|PO ncode -> sum(line ntaxamt)
         static readonly Dictionary<string, string> _lineRemarkByKey = new Dictionary<string, string>();   // office|line ncode -> vdiscountremarks
-        static int _cChecklist, _cPayTermDocs, _cChargeDocs, _cLineRemarks, _cCommReq, _cCommRec;
+        static int _cChecklist, _cPayTermDocs, _cChargeDocs, _cLineRemarks, _cCommReq, _cCommRec, _cAdj;
         static Dictionary<int, string> _srcCurrencyName;   // mstcurrency short name, for the commission currencies
 
         public static void Run()
@@ -4251,6 +4335,7 @@ namespace eBizWiztoEdifyBiz
 
             using (SqlConnection tgt = OpenTgt())
             {
+                EnsurePoColumns(tgt);
                 EnsureStatuses(tgt);
                 SeedCategories(tgt);
                 SeedPendingReasons(tgt);
@@ -4273,7 +4358,7 @@ namespace eBizWiztoEdifyBiz
                 Console.WriteLine("-----------------------------------------------------");
 
                 string headerSql = @"
-                    SELECT ncode, vtrnprefix, ntrnno, dtrndate, ntoparty, ncurrency, nprindiscountperc, dprindispatchdate,
+                    SELECT ncode, vtrnprefix, ntrnno, dtrndate, ntoparty, ncurrency, nprindiscountperc, ntotalamount, dprindispatchdate,
                            vtermsconditions, vremarks, vcomment, nordplcdstatus, ninquirycategory, npendingreason,
                            nbillto, nshipto, vinvno, dinvdate, vrefno, drefdate, nofficeid, addedon, editedon,
                            ncheckset, nterms, dprininstdate, nprinorpayrecdperc, nprinorpayrecdamt, nprinorpaypenperc, nprinorpaypenamc,
@@ -4300,7 +4385,7 @@ namespace eBizWiztoEdifyBiz
                 Console.WriteLine("  Sales Order linked       : " + _soLinked + " (salesordercode -> migrated SO inqcs.code)");
                 Console.WriteLine("  Masters added            : status " + _newStatus + ", category " + _newCategory + ", pending reason " + _newPend);
                 Console.WriteLine("  Check list items         : " + _cChecklist + "  (taskchecklist, module='PUR')");
-                Console.WriteLine("  Payment terms            : " + _cPayTermDocs + " POs (pur_order.term) | charges in remarks: " + _cChargeDocs + " | line remarks: " + _cLineRemarks);
+                Console.WriteLine("  Payment terms            : " + _cPayTermDocs + " POs (pur_order.term) | pur_adjust rows: " + _cAdj + " | line remarks: " + _cLineRemarks);
                 Console.WriteLine("  Commission in remarks    : requested " + _cCommReq + ", received " + _cCommRec);
                 Console.WriteLine("  Delivery date set        : " + _cDelDates + " POs (line schedule, header Dispatch Date as fallback)");
                 Console.WriteLine("  Errors                   : " + _cErrors);
@@ -4347,6 +4432,23 @@ namespace eBizWiztoEdifyBiz
             object createdon = P(dr["addedon"]);
             object updatedon = dr["editedon"] != DBNull.Value ? dr["editedon"] : P(dr["addedon"]);
 
+            object commReq = NzDec(dr["nprincommreq"]);
+            int ccq; object commReqCur = _currencyMap.TryGetValue(Int(dr["nprinreqcurrency"]), out ccq) ? (object)ccq : DBNull.Value;
+            object commRec = NzDec(dr["nprincommrec"]);
+            int ccc; object commRecCur = _currencyMap.TryGetValue(Int(dr["nprinreccurrency"]), out ccc) ? (object)ccc : DBNull.Value;
+            object orPayRecdPerc = NzDec(dr["nprinorpayrecdperc"]);
+            object orPayRecdAmt = NzDec(dr["nprinorpayrecdamt"]);
+            object orPayPenPerc = NzDec(dr["nprinorpaypenperc"]);
+            object orPayPenAmt = NzDec(dr["nprinorpaypenamc"]);
+            object payPendDate = P(dr["dprinpaypenddate"]);
+            object custInr = NzDec(dr["nprininrcustcleaamt"]);
+            object custRecd = NzDec(dr["ncustomclerecamt"]);
+            object custPend = NzDec(dr["ncustomclependamt"]);
+            object ccsRemarks = PS(Str(dr["vccsremarks"]));
+            object dispatchDate = P(dr["dprindispatchdate"]);
+            object installDate = P(dr["dprininstdate"]);
+            object commentText = PS(BuildComment(dr));
+
             using (SqlTransaction tx = tgt.BeginTransaction())
             {
                 int detN = 0, detSkip = 0;
@@ -4357,10 +4459,16 @@ namespace eBizWiztoEdifyBiz
                         INSERT INTO pur_order
                             (purorderno, purorderdt, scode, currency, discount, deliverydate, pay_notes, remarks, term,
                              status, salesordercode, inquirycategory, pendingreason, cbranchcode, shippingbranch, invoiceno, invoicedate, oano, oadate,
+                             commissionrequested, commissionreqcurrency, commissionreceived, commissionreccurrency,
+                             orvalpayrecdperc, orvalpayrecdamt, orvalpaypenperc, orvalpaypenamt, paymentpendingdate,
+                             custclearinrvalue, custclearrecdamt, custclearpendamt, ccsremarks, dispatchdate, installationdate, comment,
                              branchcode, executive, comcode, [type], createdby, updatedby, createdon, updatedon)
                         OUTPUT INSERTED.code
                         VALUES (@pono, @podt, @scode, @cur, @disc, @deldt, @pay, @rem, @term,
                                 @status, @soc, @cat, @pend, @buyerbranch, @shipbranch, @invno, @invdt, @oano, @oadt,
+                                @commreq, @commreqcur, @commrec, @commreccur,
+                                @orprp, @orpra, @orppp, @orppa, @ppdate,
+                                @custinr, @custrecd, @custpend, @ccsrem, @dispdt, @instdt, @comment,
                                 @branch, @exec, @com, 'PO', @crb, @ubr, @con, @uon)";
                     using (SqlCommand c = new SqlCommand(ins, tgt, tx))
                     {
@@ -4386,6 +4494,22 @@ namespace eBizWiztoEdifyBiz
                         c.Parameters.AddWithValue("@invdt", invoicedate);
                         c.Parameters.AddWithValue("@oano", oano);
                         c.Parameters.AddWithValue("@oadt", oadate);
+                        c.Parameters.AddWithValue("@commreq", commReq);
+                        c.Parameters.AddWithValue("@commreqcur", commReqCur);
+                        c.Parameters.AddWithValue("@commrec", commRec);
+                        c.Parameters.AddWithValue("@commreccur", commRecCur);
+                        c.Parameters.AddWithValue("@orprp", orPayRecdPerc);
+                        c.Parameters.AddWithValue("@orpra", orPayRecdAmt);
+                        c.Parameters.AddWithValue("@orppp", orPayPenPerc);
+                        c.Parameters.AddWithValue("@orppa", orPayPenAmt);
+                        c.Parameters.AddWithValue("@ppdate", payPendDate);
+                        c.Parameters.AddWithValue("@custinr", custInr);
+                        c.Parameters.AddWithValue("@custrecd", custRecd);
+                        c.Parameters.AddWithValue("@custpend", custPend);
+                        c.Parameters.AddWithValue("@ccsrem", ccsRemarks);
+                        c.Parameters.AddWithValue("@dispdt", dispatchDate);
+                        c.Parameters.AddWithValue("@instdt", installDate);
+                        c.Parameters.AddWithValue("@comment", commentText);
                         c.Parameters.AddWithValue("@branch", branch);
                         c.Parameters.AddWithValue("@exec", MigrationUser);
                         c.Parameters.AddWithValue("@com", CompanyCode);
@@ -4395,6 +4519,7 @@ namespace eBizWiztoEdifyBiz
                         code = Convert.ToInt32(c.ExecuteScalar());
                     }
 
+                    decimal migratedValue = 0m;
                     List<decimal[]> plist;
                     if (_hdrProductsByKey.TryGetValue(office + "|" + srcCode, out plist))
                     {
@@ -4433,9 +4558,21 @@ namespace eBizWiztoEdifyBiz
                                 d.Parameters.AddWithValue("@uon", updatedon);
                                 d.ExecuteNonQuery();
                             }
+                            migratedValue += p[1] * p[2];
                             detN++;
                         }
                     }
+
+                    string ckey = office + "|" + srcCode;
+                    decimal itemsAll2, lineTax2, gstRate2; List<object[]> chg2;
+                    _itemsAllByKey.TryGetValue(ckey, out itemsAll2); _lineTaxByKey.TryGetValue(ckey, out lineTax2);
+                    _chargesByKey.TryGetValue(ckey, out chg2);
+                    List<object[]> adj = Shared.ComputeCharges(itemsAll2, chg2, out gstRate2);
+                    decimal otherItems = Math.Round(itemsAll2 - migratedValue, 2);
+                    if (otherItems != 0) adj.Insert(0, new object[] { "Other items (eBizWiz)", 0m, otherItems });
+                    if (lineTax2 != 0) adj.Add(new object[] { "Tax on items (eBizWiz)", 0m, lineTax2 });
+                    _cAdj += InsertPurAdjustments(tgt, tx, code, adj, createdon, updatedon);
+                    _cAdj += PoDifference(tgt, tx, code, Dec(dr["ntotalamount"]), createdon, updatedon);
 
                     // Check list -> standard Task Check List on the PO view, module 'PUR' (the tag purchaseorder.js passes). - Aftab Alam
                     int clN = 0;
@@ -4499,28 +4636,95 @@ namespace eBizWiztoEdifyBiz
             return codes.Count > 0 ? (object)string.Join(",", codes) : DBNull.Value;
         }
 
+        static int InsertPurAdjustments(SqlConnection tgt, SqlTransaction tx, int purcode, List<object[]> rows, object createdon, object updatedon)
+        {
+            int n = 0;
+            foreach (object[] a in rows)
+            {
+                using (SqlCommand q = new SqlCommand(@"INSERT INTO pur_adjust (purcode, adjustname, adjustpercent, adjustamount, createdby, updatedby, createdon, updatedon)
+                                                     VALUES (@i, @n, @p, @a, @cb, @cb, @con, @uon)", tgt, tx))
+                {
+                    q.Parameters.AddWithValue("@i", purcode);
+                    q.Parameters.AddWithValue("@n", (string)a[0]);
+                    q.Parameters.AddWithValue("@p", a[1]);
+                    q.Parameters.AddWithValue("@a", a[2]);
+                    q.Parameters.AddWithValue("@cb", MigrationUser);
+                    q.Parameters.AddWithValue("@con", createdon);
+                    q.Parameters.AddWithValue("@uon", updatedon);
+                    q.ExecuteNonQuery();
+                }
+                n++;
+            }
+            return n;
+        }
+
+        static int PoDifference(SqlConnection tgt, SqlTransaction tx, int purcode, decimal total, object createdon, object updatedon)
+        {
+            decimal now;
+            using (SqlCommand q = new SqlCommand(@"SELECT (SELECT ISNULL(SUM(ISNULL(qty,0)*ISNULL(price,0)-ISNULL(discount,0)),0) FROM pur_order_det WHERE purcode=@p)
+                                                        + (SELECT ISNULL(SUM(ISNULL(adjustamount,0)),0) FROM pur_adjust WHERE purcode=@p)", tgt, tx))
+            { q.Parameters.AddWithValue("@p", purcode); now = Dec(q.ExecuteScalar()); }
+            decimal diff = Math.Round(total - now, 2);
+            if (diff == 0) return 0;
+            using (SqlCommand q = new SqlCommand(@"INSERT INTO pur_adjust (purcode, adjustname, adjustpercent, adjustamount, createdby, updatedby, createdon, updatedon)
+                                                 VALUES (@p, @n, 0, @a, @cb, @cb, @con, @uon)", tgt, tx))
+            {
+                q.Parameters.AddWithValue("@p", purcode);
+                q.Parameters.AddWithValue("@n", Math.Abs(diff) <= 1m ? "PO rounding (eBizWiz)" : "PO difference (eBizWiz)");
+                q.Parameters.AddWithValue("@a", diff);
+                q.Parameters.AddWithValue("@cb", MigrationUser);
+                q.Parameters.AddWithValue("@con", createdon);
+                q.Parameters.AddWithValue("@uon", updatedon);
+                q.ExecuteNonQuery();
+            }
+            return 1;
+        }
+
+        static void EnsurePoColumns(SqlConnection tgt)
+        {
+            string[] cols = {
+                "commissionrequested numeric(18,2)", "commissionreqcurrency int", "commissionreceived numeric(18,2)", "commissionreccurrency int",
+                "orvalpayrecdperc numeric(13,2)", "orvalpayrecdamt numeric(18,2)", "orvalpaypenperc numeric(13,2)", "orvalpaypenamt numeric(18,2)",
+                "paymentpendingdate datetime", "custclearinrvalue numeric(18,2)", "custclearrecdamt numeric(18,2)", "custclearpendamt numeric(18,2)",
+                "ccsremarks nvarchar(max)", "dispatchdate datetime", "installationdate datetime", "comment nvarchar(max)"
+            };
+            foreach (string c in cols)
+            {
+                string name = c.Substring(0, c.IndexOf(' '));
+                using (SqlCommand cmd = new SqlCommand("IF COL_LENGTH('dbo.pur_order', '" + name + "') IS NULL ALTER TABLE dbo.pur_order ADD " + c, tgt))
+                    cmd.ExecuteNonQuery();
+            }
+            using (SqlCommand w = new SqlCommand("IF COL_LENGTH('dbo.pur_adjust', 'adjustname') BETWEEN 1 AND 254 ALTER TABLE dbo.pur_adjust ALTER COLUMN adjustname varchar(255) NULL", tgt))
+                w.ExecuteNonQuery();
+        }
+
+        static object NzDec(object v) { return (v == null || v == DBNull.Value || Dec(v) == 0) ? (object)DBNull.Value : v; }
+
+        static string BuildComment(SqlDataReader dr)
+        {
+            string raw = Str(dr["vcomment"]);
+            if (string.IsNullOrWhiteSpace(raw)) return "";
+            List<string> lines = new List<string>();
+            foreach (string entry in raw.Split(new[] { "///" }, StringSplitOptions.None))
+            {
+                int eq = entry.IndexOf('=');
+                if (eq < 0) continue;
+                string text = entry.Substring(eq + 1).Trim();
+                if (text.Length == 0) continue;
+                string left = entry.Substring(0, eq);
+                int star = left.IndexOf('*');
+                string date = (star >= 0 ? left.Substring(0, star) : left).Trim();
+                int sp = date.IndexOf(' '); if (sp > 0) date = date.Substring(0, sp);
+                string user = star >= 0 ? left.Substring(star + 1).Trim() : "";
+                lines.Add(date + (user.Length > 0 ? " - " + user : "") + ": " + text);
+            }
+            return string.Join("\r\n", lines);
+        }
+
         static string BuildRemark(SqlDataReader dr)
         {
             List<string> parts = new List<string>();
             string rem = Str(dr["vremarks"]); if (!string.IsNullOrWhiteSpace(rem)) parts.Add(rem);
-            string cm = Str(dr["vcomment"]); if (!string.IsNullOrWhiteSpace(cm)) parts.Add("Comment: " + cm);
-            // Client screen fields with no column on our PO, kept with their screen labels. Commission Requested / Received are
-            // masked on the client screen (XXXXXXXX); migrated into Remarks on the user's decision (17/09/2026). - Aftab Alam
-            //string cset = LookInt(_checkset, Int(dr["ncheckset"])); if (cset.Length > 0) parts.Add("Check List: " + cset);   // check set -> Checklist Master; items are in the Task Check List tab, not in the remark - Aftab Alam
-            AddCommission(parts, "Commission Requested", dr["nprincommreq"], dr["nprinreqcurrency"]);
-            AddCommission(parts, "Commission Received", dr["nprincommrec"], dr["nprinreccurrency"]);
-            if (dr["dprindispatchdate"] != DBNull.Value) parts.Add("Dispatch Date: " + Convert.ToDateTime(dr["dprindispatchdate"]).ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
-            if (dr["dprininstdate"] != DBNull.Value) parts.Add("Installation Date: " + Convert.ToDateTime(dr["dprininstdate"]).ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
-            AddAmt(parts, "OR Value Payment Received %", dr["nprinorpayrecdperc"]);
-            AddAmt(parts, "OR Value Payment Received Amt", dr["nprinorpayrecdamt"]);
-            AddAmt(parts, "OR Value Payment Pending %", dr["nprinorpaypenperc"]);
-            AddAmt(parts, "OR Value Payment Pending Amt", dr["nprinorpaypenamc"]);
-            if (dr["dprinpaypenddate"] != DBNull.Value) parts.Add("Payment Pending Since Date: " + Convert.ToDateTime(dr["dprinpaypenddate"]).ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
-            AddAmt(parts, "Total INR Value of Custom Clearance", dr["nprininrcustcleaamt"]);
-            AddAmt(parts, "Custom Clearance Recd. Amt.", dr["ncustomclerecamt"]);
-            AddAmt(parts, "Custom Clearance Pending Amt.", dr["ncustomclependamt"]);
-            string ccs = Str(dr["vccsremarks"]); if (ccs.Length > 0) parts.Add("CCS Remarks: " + ccs);
-            List<string> ch; if (_chargesTextByKey.TryGetValue(Int(dr["nofficeid"]) + "|" + Int(dr["ncode"]), out ch)) { parts.Add("Post Tax Charges: " + string.Join("; ", ch)); _cChargeDocs++; }
             return string.Join(" | ", parts);
         }
 
@@ -4579,18 +4783,8 @@ namespace eBizWiztoEdifyBiz
                 List<string> l; if (!_payTermsByKey.TryGetValue(k, out l)) _payTermsByKey[k] = l = new List<string>();
                 l.Add(txt); p++;
             }
-            // Post-tax charges: the saksham PO view draws no Adjustments (pur_adjust) and totals the lines only, so the client's
-            // charges are kept as text: "Add : Sea Freight & Insurance Charges 5% / 1250.00". - Aftab Alam
-            foreach (DataRow r in GetSrc("SELECT c.nofficeid, c.nordpl, p.vname, c.venteredinamtorper, c.ntaxpercentage, c.namount FROM trdordpl4posttaxchgs c WITH (NOLOCK) JOIN mstprepostchgs p WITH (NOLOCK) ON p.ncode = c.nmstposttaxchgs WHERE c.nofficeid IN (" + OfficeIn + ") ORDER BY c.nofficeid, c.nordpl, c.ncode").Tables[0].Rows)
-            {
-                string k = Int(r["nofficeid"]) + "|" + Int(r["nordpl"]);
-                string txt = Str(r["vname"]);
-                bool pct = Str(r["venteredinamtorper"]).ToUpperInvariant() == "PERCENTAGE";
-                if (pct && r["ntaxpercentage"] != DBNull.Value) txt += " " + Dec(r["ntaxpercentage"]).ToString("0.##", CultureInfo.InvariantCulture) + "%";
-                if (r["namount"] != DBNull.Value && Dec(r["namount"]) != 0) txt += " = " + Dec(r["namount"]).ToString("0.00", CultureInfo.InvariantCulture);
-                List<string> l; if (!_chargesTextByKey.TryGetValue(k, out l)) _chargesTextByKey[k] = l = new List<string>();
-                l.Add(txt); c++;
-            }
+            _chargesByKey = Shared.LoadPostTaxCharges("trdordpl4posttaxchgs", "nordpl");
+            foreach (List<object[]> cl2 in _chargesByKey.Values) c += cl2.Count;
             foreach (DataRow r in GetSrc("SELECT nofficeid, ncode, vdiscountremarks FROM trdordpl1items WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") AND LEN(ISNULL(vdiscountremarks,'')) > 0").Tables[0].Rows)
                 _lineRemarkByKey[Int(r["nofficeid"]) + "|" + Int(r["ncode"])] = Str(r["vdiscountremarks"]);
             Console.WriteLine("  Check lists loaded: " + n + " items across " + _checksByKey.Count + " POs; payment terms " + p + " rows; charges " + c + " rows; line remarks " + _lineRemarkByKey.Count);
@@ -4769,12 +4963,16 @@ namespace eBizWiztoEdifyBiz
             // All lines are read: the Sales Order link (nordrcditemdetailncode) is kept even on a blank-item line
             // (e.g. PO OP1606 links OR2128/OR2129 only via item-less lines); products are added only when nitem > 0. - Aftab Alam
             // decimal[] = { item, qty, nrate, ndiscount, currency, line ncode, ndiscountperc, nmasterrate } - line ncode carries the line remarks. - Aftab Alam
-            foreach (DataRow r in GetSrc("SELECT nofficeid, nordpl, nitem, nquantity, nrate, ndiscount, nitemcurrency, nordrcditemdetailncode, ncode, nmasterrate, ndiscountperc FROM trdordpl1items WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, nordpl, ncode").Tables[0].Rows)
+            foreach (DataRow r in GetSrc("SELECT nofficeid, nordpl, nitem, nquantity, nrate, ndiscount, nitemcurrency, nordrcditemdetailncode, ncode, nmasterrate, ndiscountperc, ntaxamt FROM trdordpl1items WITH (NOLOCK) WHERE nofficeid IN (" + OfficeIn + ") ORDER BY nofficeid, nordpl, ncode").Tables[0].Rows)
             {
                 int office = Int(r[0]);
                 int hdr = Int(r[1]); if (hdr <= 0) continue;
                 int item = Int(r[2]);
                 string key = office + "|" + hdr;
+
+                decimal cur;
+                _itemsAllByKey.TryGetValue(key, out cur); _itemsAllByKey[key] = cur + Dec(r[3]) * Dec(r[4]);
+                _lineTaxByKey.TryGetValue(key, out cur); _lineTaxByKey[key] = cur + Dec(r[11]);
 
                 if (item > 0)
                 {
@@ -4892,6 +5090,7 @@ namespace eBizWiztoEdifyBiz
             using (SqlConnection tgt = OpenTgt())
             {
                 SeedSalesTypes(tgt);
+                SeedPaymentTerms(tgt);
                 EnsureWarrantyLabels(tgt);
                 BuildCurrencyMap(tgt);
                 BuildCustomerMap(tgt);
@@ -5239,6 +5438,36 @@ namespace eBizWiztoEdifyBiz
                 have.Add(nm); added++;
             }
             Console.WriteLine("  miscellaneous(Sales/Sales Type) seeded: " + added + " (full master)");
+        }
+
+        static void SeedPaymentTerms(SqlConnection tgt)
+        {
+            using (SqlCommand cr = new SqlCommand("IF OBJECT_ID('dbo.paymentTerms') IS NULL CREATE TABLE dbo.paymentTerms (code int IDENTITY(1,1) NOT NULL, termsheading nvarchar(255) NULL, shortdesc nvarchar(max) NULL, longdesc nvarchar(max) NULL, businesstype varchar(100) NULL, isdefault int NOT NULL DEFAULT(0), createdby int NULL, createdon datetime NULL, updatedby int NULL, updatedon datetime NULL, behaviour varchar(30) NULL)", tgt))
+                cr.ExecuteNonQuery();
+            HashSet<string> have = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT shortdesc FROM paymentTerms WHERE termsheading='Payment Terms'").Tables[0].Rows) { string n0 = Str(r["shortdesc"]).Trim(); if (n0.Length > 0) have.Add(n0); }
+            int added = 0;
+            foreach (DataRow r in GetSrc("SELECT DISTINCT vname FROM mstpaymentterms WITH (NOLOCK)").Tables[0].Rows)
+            {
+                string n = Str(r["vname"]).Trim();
+                if (n.Length == 0 || have.Contains(n)) continue;
+                using (SqlCommand ins = new SqlCommand("INSERT INTO paymentTerms (termsheading, shortdesc, isdefault, createdby, createdon, updatedby, updatedon) VALUES ('Payment Terms', @n, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                { ins.Parameters.AddWithValue("@n", n); ins.Parameters.AddWithValue("@cb", MigrationUser); ins.ExecuteNonQuery(); }
+                have.Add(n); added++;
+            }
+            Console.WriteLine("  Payment terms master seeded: +" + added + " (total " + have.Count + ")");
+            HashSet<string> havec = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DataRow r in GetTgt("SELECT shortdesc FROM paymentTerms WHERE termsheading='Post Tax Charges'").Tables[0].Rows) { string n0 = Str(r["shortdesc"]).Trim(); if (n0.Length > 0) havec.Add(n0); }
+            int addedc = 0;
+            foreach (DataRow r in GetSrc("SELECT DISTINCT vname FROM mstprepostchgs WITH (NOLOCK)").Tables[0].Rows)
+            {
+                string n = Str(r["vname"]).Trim();
+                if (n.Length == 0 || havec.Contains(n)) continue;
+                using (SqlCommand ins = new SqlCommand("INSERT INTO paymentTerms (termsheading, shortdesc, isdefault, createdby, createdon, updatedby, updatedon) VALUES ('Post Tax Charges', @n, 0, @cb, GETDATE(), @cb, GETDATE())", tgt))
+                { ins.Parameters.AddWithValue("@n", n); ins.Parameters.AddWithValue("@cb", MigrationUser); ins.ExecuteNonQuery(); }
+                havec.Add(n); addedc++;
+            }
+            Console.WriteLine("  Post Tax Charges master seeded: +" + addedc + " (total " + havec.Count + ")");
         }
 
         static void BuildCurrencyMap(SqlConnection tgt)
